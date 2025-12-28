@@ -1,0 +1,11 @@
+{
+  "version": 2,
+  "dgSpecHash": "MWPpJ5BhOcw=",
+  "success": true,
+  "projectFilePath": "C:\\Projects\\IndustrailAI\\src\\IndustrialAnalytics.Api\\IndustrialAnalytics.Api.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\aolam\\.nuget\\packages\\microsoft.aspnetcore.openapi\\9.0.0\\microsoft.aspnetcore.openapi.9.0.0.nupkg.sha512",
+    "C:\\Users\\aolam\\.nuget\\packages\\microsoft.openapi\\1.6.17\\microsoft.openapi.1.6.17.nupkg.sha512"
+  ],
+  "logs": []
+}

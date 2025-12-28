@@ -1,0 +1,15 @@
+C:\Projects\IndustrailAI\src\IndustrialAnalytics.Infrastructure\bin\Debug\net9.0\IndustrialAnalytics.Infrastructure.deps.json
+C:\Projects\IndustrailAI\src\IndustrialAnalytics.Infrastructure\bin\Debug\net9.0\IndustrialAnalytics.Infrastructure.dll
+C:\Projects\IndustrailAI\src\IndustrialAnalytics.Infrastructure\bin\Debug\net9.0\IndustrialAnalytics.Infrastructure.pdb
+C:\Projects\IndustrailAI\src\IndustrialAnalytics.Infrastructure\bin\Debug\net9.0\IndustrialAnalytics.Domain.dll
+C:\Projects\IndustrailAI\src\IndustrialAnalytics.Infrastructure\bin\Debug\net9.0\IndustrialAnalytics.Domain.pdb
+C:\Projects\IndustrailAI\src\IndustrialAnalytics.Infrastructure\obj\Debug\net9.0\IndustrialAnalytics.Infrastructure.csproj.AssemblyReference.cache
+C:\Projects\IndustrailAI\src\IndustrialAnalytics.Infrastructure\obj\Debug\net9.0\IndustrialAnalytics.Infrastructure.GeneratedMSBuildEditorConfig.editorconfig
+C:\Projects\IndustrailAI\src\IndustrialAnalytics.Infrastructure\obj\Debug\net9.0\IndustrialAnalytics.Infrastructure.AssemblyInfoInputs.cache
+C:\Projects\IndustrailAI\src\IndustrialAnalytics.Infrastructure\obj\Debug\net9.0\IndustrialAnalytics.Infrastructure.AssemblyInfo.cs
+C:\Projects\IndustrailAI\src\IndustrialAnalytics.Infrastructure\obj\Debug\net9.0\IndustrialAnalytics.Infrastructure.csproj.CoreCompileInputs.cache
+C:\Projects\IndustrailAI\src\IndustrialAnalytics.Infrastructure\obj\Debug\net9.0\Industri.1990C601.Up2Date
+C:\Projects\IndustrailAI\src\IndustrialAnalytics.Infrastructure\obj\Debug\net9.0\IndustrialAnalytics.Infrastructure.dll
+C:\Projects\IndustrailAI\src\IndustrialAnalytics.Infrastructure\obj\Debug\net9.0\refint\IndustrialAnalytics.Infrastructure.dll
+C:\Projects\IndustrailAI\src\IndustrialAnalytics.Infrastructure\obj\Debug\net9.0\IndustrialAnalytics.Infrastructure.pdb
+C:\Projects\IndustrailAI\src\IndustrialAnalytics.Infrastructure\obj\Debug\net9.0\ref\IndustrialAnalytics.Infrastructure.dll
