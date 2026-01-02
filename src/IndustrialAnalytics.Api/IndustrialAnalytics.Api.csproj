@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk.Web">
+﻿<Project Sdk="Microsoft.NET.Sdk.Web">
 
   <PropertyGroup>
     <TargetFramework>net9.0</TargetFramework>
@@ -8,6 +8,12 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" />
+    <PackageReference Include="Swashbuckle.AspNetCore" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\IndustrialAnalytics.Contracts\IndustrialAnalytics.Contracts.csproj" />
+    <ProjectReference Include="..\IndustrialAnalytics.Infrastructure\IndustrialAnalytics.Infrastructure.csproj" />
   </ItemGroup>
 
 </Project>

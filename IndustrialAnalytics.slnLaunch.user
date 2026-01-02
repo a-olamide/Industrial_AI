@@ -1,0 +1,15 @@
+[
+  {
+    "Name": "New Profile",
+    "Projects": [
+      {
+        "Path": "src\\IndustrialAnalytics.Api\\IndustrialAnalytics.Api.csproj",
+        "Action": "Start"
+      },
+      {
+        "Path": "src\\IndustrialAnalytics.Ui\\IndustrialAnalytics.Ui.csproj",
+        "Action": "Start"
+      }
+    ]
+  }
+]

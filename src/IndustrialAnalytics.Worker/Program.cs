@@ -26,7 +26,7 @@ builder.Services.Configure<IndustrialAnalytics.Domain.Recommendations.Recommenda
     builder.Configuration.GetSection("RecommendationRules"));
 // Add layers
 builder.Services.AddDomain();
-builder.Services.AddInfrastructure();
+builder.Services.AddInfrastructure(builder.Configuration);
 
 // Logging
 builder.Services.AddSerilog(cfg => cfg.ReadFrom.Configuration(builder.Configuration).WriteTo.Console());

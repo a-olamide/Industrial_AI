@@ -52,7 +52,7 @@ namespace IndustrialAnalytics.Domain.Risk
             return new RiskResult(assetId, minuteTs, riskScore, level, failureMode, topDrivers, evidence);
         }
 
-        private static int PointsFor(string anomalyType, byte severity, RiskOptions opt) =>
+        private static int PointsFor(string anomalyType, int severity, RiskOptions opt) =>
             anomalyType switch
             {
                 "TEMP_DRIFT" => severity >= 3 ? opt.TempDriftS3 : opt.TempDriftS2,

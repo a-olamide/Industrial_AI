@@ -1,0 +1,49 @@
+﻿@page "/assets"
+@using IndustrialAnalytics.Contracts.Assets
+@inject IndustrialAnalytics.Ui.Services.InsightsApiClient Api
+
+<h3>Assets</h3>
+
+@if (_loading)
+{
+    <p>Loading...</p>
+}
+else if (_assets is null || _assets.Count == 0)
+{
+    <p>No assets found.</p>
+}
+else
+{
+    <table class="table">
+        <thead>
+            <tr>
+                <th>Asset</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var a in _assets)
+            {
+                <tr>
+                    <td>@a.AssetId</td>
+                    <td>
+                        <a class="btn btn-sm btn-primary" href="@($"/assets/{a.AssetId}")">Open</a>
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@code {
+    private bool _loading = true;
+    private AssetListResponse? _resp;
+    private List<AssetDto>? _assets;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _resp = await Api.GetAssetsAsync();
+        _assets = _resp?.Items?.ToList();
+        _loading = false;
+    }
+}

@@ -1,0 +1,208 @@
+﻿@page "/assets/{AssetId}"
+@using IndustrialAnalytics.Ui.Components.Shared
+@inject IndustrialAnalytics.Ui.Services.InsightsApiClient Api
+
+<h3>Asset: @AssetId</h3>
+
+<div class="row g-3 align-items-end mb-3">
+    <div class="col-md-4">
+        <label class="form-label">From (UTC)</label>
+        <input class="form-control" type="datetime-local" @bind="_from" />
+    </div>
+
+    <div class="col-md-4">
+        <label class="form-label">To (UTC)</label>
+        <input class="form-control" type="datetime-local" @bind="_to" />
+    </div>
+
+    <div class="col-md-4">
+        <button class="btn btn-primary" @onclick="Reload" disabled="@_loading">
+            Reload
+        </button>
+    </div>
+</div>
+
+@if (_loading)
+{
+    <p>Loading...</p>
+}
+else
+{
+    <h4>Summary</h4>
+    @if (_summary is null)
+    {
+        <p>No summary.</p>
+    }
+    else
+    {
+        <div class="card p-3 mb-3">
+            <div>
+                <b>Risk:</b>
+                <span class="@RiskBadgeClass(_summary.Risk.Level)">
+                    ● @_summary.Risk.Level (@_summary.Risk.Score)
+                </span>
+            </div>
+            <div><b>Failure mode:</b> @_summary.Risk.FailureMode</div>
+            <div><b>Top drivers:</b> @_summary.Risk.TopDrivers</div>
+            <div><b>As of:</b> @_summary.AsOfMinuteTs</div>
+        </div>
+    }
+    <h4>Risk trend</h4>
+
+@if (_risk is null || _risk.Count == 0)
+{
+    <p>No risk points in range.</p>
+}
+else
+{
+        <RiskSparkline Points="_risk" AnomalyTimesUtc="_anomalyTimes" />
+
+
+
+    <div class="mt-2">
+        <b>Current risk:</b>
+        <RiskBadge Score="@_risk.Last().Score" />
+    </div>
+}
+    <h4>Risk points</h4>
+    @if (_risk is null || _risk.Count == 0)
+    {
+        <p>No risk points in range.</p>
+    }
+    else
+    {
+        <table class="table table-sm">
+            <thead>
+                <tr>
+                    <th>Time (UTC)</th>
+                    <th>Risk</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var p in _risk)
+                {
+                    <tr>
+                        <td>@p.MinuteTs</td>
+                        <td>@p.Score</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+
+    <h4>Recommendations (OPEN)</h4>
+    @if (_recs?.Items is null || _recs.Items.Count == 0)
+    {
+        <p>No open recommendations.</p>
+    }
+    else
+    {
+        <table class="table">
+            <thead>
+                <tr>
+                    <th>Type</th>
+                    <th>Title</th>
+                    <th>Confidence</th>
+                    <th>Status</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var r in _recs.Items)
+                {
+                    <tr>
+                        <td>@r.RecType</td>
+                        <td>@r.Title</td>
+                        <td>@r.Confidence</td>
+                        <td>@r.Status</td>
+                        <td class="text-end">
+                            <button class="btn btn-sm btn-outline-success me-2"
+                                    @onclick="() => Ack(r.RecommendationId)">
+                                ACK
+                            </button>
+                            <button class="btn btn-sm btn-outline-danger"
+                                    @onclick="() => Close(r.RecommendationId)">
+                                CLOSE
+                            </button>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+}
+
+@code {
+    private List<DateTime> _anomalyTimes = new();
+
+    [Parameter] public string AssetId { get; set; } = "";
+
+    private bool _loading = true;
+
+    private IndustrialAnalytics.Contracts.Assets.AssetSummaryDto? _summary;
+    private List<IndustrialAnalytics.Contracts.Risk.RiskPointDto>? _risk;
+
+    // If you don't have AssetRecommendationsResponseDto in Contracts, make this dynamic:
+    // private dynamic? _recs;
+    private IndustrialAnalytics.Contracts.Assets.AssetRecommendationsResponseDto? _recs;
+
+    // Bind datetime-local directly to DateTime (avoids TimeOnly/string issues)
+    private DateTime? _from = new DateTime(2025, 1, 1, 12, 0, 0, DateTimeKind.Utc);
+    private DateTime? _to = new DateTime(2025, 1, 1, 14, 0, 0, DateTimeKind.Utc);
+
+    private const string UserName = "blazor-ui";
+
+    protected override async Task OnParametersSetAsync() => await Reload();
+
+    private async Task Reload()
+    {
+        _loading = true;
+
+        // If user clears the input, fall back to last 2 hours
+        var fromUtc = (_from ?? DateTime.UtcNow.AddHours(-2));
+        var toUtc = (_to ?? DateTime.UtcNow);
+
+        // Treat them as UTC (datetime-local has no TZ)
+        fromUtc = DateTime.SpecifyKind(fromUtc, DateTimeKind.Utc);
+        toUtc = DateTime.SpecifyKind(toUtc, DateTimeKind.Utc);
+
+        _summary = await Api.GetAssetSummaryAsync(AssetId);
+        _risk = (await Api.GetRiskSeriesAsync(AssetId, fromUtc, toUtc, stepMinutes: 1))?.ToList();
+        _recs = await Api.GetRecommendationsAsync(AssetId, status: "OPEN", take: 50);
+
+        var anomaliesResp = await Api.GetAnomaliesAsync(AssetId, fromUtc, toUtc);
+        _anomalyTimes = anomaliesResp?.Items.Select(a => a.MinuteTs).ToList() ?? new();
+
+        _loading = false;
+    }
+
+    private async Task Ack(long id)
+    {
+        await Api.AckRecommendationAsync(
+            id,
+            ackUntil: DateTime.UtcNow.AddHours(12),
+            by: UserName,
+            note: "Acked from Blazor UI");
+
+        await Reload();
+    }
+
+    private async Task Close(long id)
+    {
+        await Api.CloseRecommendationAsync(
+            id,
+            reason: "Closed from Blazor UI",
+            by: UserName);
+
+        await Reload();
+    }
+    private static string RiskBadgeClass(string? level) =>
+    (level ?? "").ToUpperInvariant() switch
+    {
+        "LOW" => "badge bg-success",
+        "MED" or "MEDIUM" => "badge bg-warning text-dark",
+        "HIGH" => "badge bg-danger",
+        _ => "badge bg-secondary"
+    };
+
+}

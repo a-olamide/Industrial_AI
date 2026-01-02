@@ -9,8 +9,16 @@ using System.Threading.Tasks;
 
 namespace IndustrialAnalytics.Infrastructure.Sql
 {
-    public class SqlConnectionFactory(IConfiguration cfg) : ISqlConnectionFactory
+    public sealed class SqlConnectionFactory : ISqlConnectionFactory
     {
-        public IDbConnection Create() => new SqlConnection(cfg.GetConnectionString("Sql"));
+        private readonly string _connectionString;
+
+        public SqlConnectionFactory(string connectionString)
+        {
+            _connectionString = connectionString;
+        }
+
+        public IDbConnection Create()
+            => new SqlConnection(_connectionString);
     }
 }

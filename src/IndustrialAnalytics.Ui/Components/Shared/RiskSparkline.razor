@@ -1,0 +1,107 @@
+﻿@using IndustrialAnalytics.Contracts.Risk
+
+<svg width="@Width" height="@Height"
+     viewBox="0 0 @Width @Height"
+     style="border:1px solid #e5e7eb; border-radius:8px; background:white;">
+    @* Anomaly markers (vertical dashed lines) *@
+    @if (_anomalyXs.Count > 0)
+    {
+        foreach (var ax in _anomalyXs)
+        {
+            <line x1="@ax" y1="0" x2="@ax" y2="@Height"
+                  stroke="#dc2626"
+                  stroke-width="1.5"
+                  stroke-dasharray="4,4"
+                  opacity="0.9" />
+
+            <polygon points="@($"{ax - 4:F1},{Height:F1} {ax + 4:F1},{Height:F1} {ax:F1},{Height - 8:F1}")"
+                     fill="#dc2626"
+                     opacity="0.9" />
+        }
+    }
+
+    @* Risk line *@
+    <polyline fill="none"
+              stroke="@Stroke"
+              stroke-width="2"
+              points="@_polyPoints" />
+</svg>
+
+@code {
+    [Parameter] public IReadOnlyList<RiskPointDto>? Points { get; set; }
+
+    // Pass anomaly timestamps in UTC (e.g. anomaly minute_ts)
+    [Parameter] public IReadOnlyList<DateTime>? AnomalyTimesUtc { get; set; }
+
+    [Parameter] public int Width { get; set; } = 420;
+    [Parameter] public int Height { get; set; } = 120;
+
+    private string _polyPoints = "";
+    private readonly List<double> _anomalyXs = new();
+
+    private string Stroke =>
+        MaxRisk switch
+        {
+            >= 80 => "#dc2626", // red
+            >= 50 => "#f59e0b", // amber
+            _ => "#16a34a"      // green
+        };
+
+    private double MaxRisk => Points?.Max(p => p.Score) ?? 0;
+
+    protected override void OnParametersSet()
+    {
+        BuildPolyline();
+        BuildAnomalyMarkers();
+    }
+
+    private void BuildPolyline()
+    {
+        if (Points is null || Points.Count == 0)
+        {
+            _polyPoints = "";
+            return;
+        }
+
+        var minTs = Points.Min(p => p.MinuteTs);
+        var maxTs = Points.Max(p => p.MinuteTs);
+        var totalSeconds = Math.Max(1, (maxTs - minTs).TotalSeconds);
+
+        var max = Points.Max(p => p.Score);
+        var min = Points.Min(p => p.Score);
+        var range = Math.Max(1, max - min);
+
+        _polyPoints = string.Join(" ",
+            Points.Select(p =>
+            {
+                var x = ((p.MinuteTs - minTs).TotalSeconds / totalSeconds) * Width;
+                var y = Height - ((p.Score - min) / range * Height);
+                return $"{x:F1},{y:F1}";
+            }));
+    }
+
+    private void BuildAnomalyMarkers()
+    {
+        _anomalyXs.Clear();
+
+        if (Points is null || Points.Count < 2) return;
+        if (AnomalyTimesUtc is null || AnomalyTimesUtc.Count == 0) return;
+
+        // Map anomalies by time to x-position
+        var minTs = Points.Min(p => p.MinuteTs);
+        var maxTs = Points.Max(p => p.MinuteTs);
+        var totalSeconds = Math.Max(1, (maxTs - minTs).TotalSeconds);
+
+        foreach (var t in AnomalyTimesUtc)
+        {
+            if (t < minTs || t > maxTs) continue;
+            var tt = DateTime.SpecifyKind(t, DateTimeKind.Utc);
+
+            var x = ((tt - minTs).TotalSeconds / totalSeconds) * Width;
+
+            // avoid duplicates (multiple anomalies same minute)
+            if (_anomalyXs.All(existing => Math.Abs(existing - x) > 1.0))
+                _anomalyXs.Add(x);
+        }
+    }
+}

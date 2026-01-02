@@ -1,5 +1,6 @@
 ﻿using IndustrialAnalytics.Infrastructure.Sql;
 using IndustrialAnalytics.Infrastructure.Sql.Repositories;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using System;
 using System.Collections.Generic;
@@ -11,10 +12,13 @@ namespace IndustrialAnalytics.Infrastructure.DependencyInjection
 {
     public static class ServiceCollectionExtensions
     {
-        public static IServiceCollection AddInfrastructure(this IServiceCollection services)
+        public static IServiceCollection AddInfrastructure(this IServiceCollection services, IConfiguration cfg)
         {
-            // SQL + repositories
-            services.AddSingleton<ISqlConnectionFactory, SqlConnectionFactory>();
+            services.AddSingleton<ISqlConnectionFactory>(_ =>
+                new SqlConnectionFactory(
+                    cfg.GetConnectionString("Sql")
+                    ?? throw new InvalidOperationException("Missing connection string: Sql")));
+
             services.AddSingleton<ICheckpointStore, CheckpointStore>();
 
             services.AddSingleton<IFeatureRepository, FeatureRepository>();
@@ -23,6 +27,8 @@ namespace IndustrialAnalytics.Infrastructure.DependencyInjection
             services.AddSingleton<IRiskRepository, RiskRepository>();
             services.AddSingleton<IRiskQueryRepository, RiskQueryRepository>();
             services.AddSingleton<IRecommendationRepository, RecommendationRepository>();
+            services.AddSingleton<IRecommendationCommandRepository, RecommendationCommandRepository>();
+            services.AddSingleton<IRecommendationQueryRepository, RecommendationQueryRepository>();
 
             return services;
         }

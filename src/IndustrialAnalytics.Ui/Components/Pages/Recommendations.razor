@@ -1,0 +1,149 @@
+﻿@page "/recommendations"
+@inject IndustrialAnalytics.Ui.Services.InsightsApiClient Api
+
+<h3>Recommendations Queue</h3>
+
+<div class="row g-3 mb-3">
+    <div class="col-md-3">
+        <label class="form-label">Status</label>
+        <select class="form-select" @bind="_status">
+            <option value="OPEN">OPEN</option>
+            <option value="ACKED">ACKED</option>
+            <option value="CLOSED">CLOSED</option>
+        </select>
+    </div>
+
+    <div class="col-md-4">
+        <label class="form-label">Asset (optional)</label>
+        <input class="form-control" placeholder="PUMP_001" @bind="_assetId" />
+    </div>
+
+    <div class="col-md-2">
+        <label class="form-label">Take</label>
+        <input class="form-control" type="number" @bind="_take" />
+    </div>
+
+    <div class="col-md-3 d-flex align-items-end">
+        <button class="btn btn-primary me-2" @onclick="Reload">Reload</button>
+        <button class="btn btn-outline-secondary" @onclick="ClearFilter">Clear</button>
+    </div>
+</div>
+
+@if (_loading)
+{
+    <p>Loading...</p>
+}
+else if (_items is null || _items.Count == 0)
+{
+    <p>No recommendations found.</p>
+}
+else
+{
+    <table class="table table-sm table-hover align-middle">
+        <thead>
+            <tr>
+                <th>Asset</th>
+                <th>Type</th>
+                <th>Title</th>
+                <th>Priority</th>
+                <th>Confidence</th>
+                <th>Status</th>
+                <th>AsOf</th>
+                <th class="text-end">Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var r in _items)
+            {
+                <tr>
+                    <td>
+                        <a href="@($"/assets/{r.AssetId}")">@r.AssetId</a>
+                    </td>
+                    <td>@r.RecType</td>
+                    <td style="max-width:420px">
+                        <div class="fw-semibold">@r.Title</div>
+                        <div class="text-muted small">@r.Description</div>
+                    </td>
+                    <td>@r.Priority</td>
+                    <td>@r.Confidence</td>
+                    <td>@r.Status</td>
+                    <td>@r.AsOfMinuteTs</td>
+                    <td class="text-end">
+                        @if (r.Status == "OPEN")
+                        {
+                            <button class="btn btn-sm btn-outline-success me-2"
+                                    @onclick="() => Ack(r.RecommendationId)">
+                                ACK
+                            </button>
+                            <button class="btn btn-sm btn-outline-danger"
+                                    @onclick="() => Close(r.RecommendationId)">
+                                CLOSE
+                            </button>
+                        }
+                        else
+                        {
+                            <span class="text-muted small">—</span>
+                        }
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@code {
+    private bool _loading = true;
+
+    private string _status = "OPEN";
+    private string? _assetId;
+    private int _take = 100;
+
+    private List<IndustrialAnalytics.Contracts.Recommendations.RecommendationDto>? _items;
+
+    private const string UserName = "blazor-ui";
+
+    protected override async Task OnInitializedAsync() => await Reload();
+
+    private async Task Reload()
+    {
+        _loading = true;
+        var normalizedStatus = (_status ?? "OPEN").ToUpperInvariant();
+
+        var resp = await Api.GetRecommendationsQueueAsync(
+            status: normalizedStatus,
+            take: _take,
+            assetId: string.IsNullOrWhiteSpace(_assetId) ? null : _assetId);
+
+        _items = resp?.Items?.ToList() ?? new();
+        _loading = false;
+    }
+
+    private Task ClearFilter()
+    {
+        _status = "OPEN";
+        _assetId = null;
+        _take = 100;
+        return Reload();
+    }
+
+    private async Task Ack(long id)
+    {
+        await Api.AckRecommendationAsync(
+            id,
+            ackUntil: DateTime.UtcNow.AddHours(12),
+            by: UserName,
+            note: "Acked from Blazor UI");
+
+        await Reload();
+    }
+
+    private async Task Close(long id)
+    {
+        await Api.CloseRecommendationAsync(
+            id,
+            reason: "Closed from Blazor UI",
+            by: UserName);
+
+        await Reload();
+    }
+}

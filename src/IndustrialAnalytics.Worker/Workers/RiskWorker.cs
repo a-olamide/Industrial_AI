@@ -18,7 +18,7 @@ namespace IndustrialAnalytics.Worker.Workers
 
     public sealed class RiskWorker(
         IOptions<RiskWorkerOptions> wopt,
-        IOptions<RiskOptions> ropt,
+        IOptions<RiskOptions> ropt, 
         ICheckpointStore checkpoint,
         IAnomalyQueryRepository anomalies,
         IRiskEngine engine,

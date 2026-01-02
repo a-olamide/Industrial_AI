@@ -6,6 +6,7 @@ C:\Projects\IndustrailAI\src\IndustrialAnalytics.Domain\obj\Debug\net9.0\Industr
 C:\Projects\IndustrailAI\src\IndustrialAnalytics.Domain\obj\Debug\net9.0\IndustrialAnalytics.Domain.AssemblyInfoInputs.cache
 C:\Projects\IndustrailAI\src\IndustrialAnalytics.Domain\obj\Debug\net9.0\IndustrialAnalytics.Domain.AssemblyInfo.cs
 C:\Projects\IndustrailAI\src\IndustrialAnalytics.Domain\obj\Debug\net9.0\IndustrialAnalytics.Domain.csproj.CoreCompileInputs.cache
+C:\Projects\IndustrailAI\src\IndustrialAnalytics.Domain\obj\Debug\net9.0\IndustrialAnalytics.Domain.sourcelink.json
 C:\Projects\IndustrailAI\src\IndustrialAnalytics.Domain\obj\Debug\net9.0\IndustrialAnalytics.Domain.dll
 C:\Projects\IndustrailAI\src\IndustrialAnalytics.Domain\obj\Debug\net9.0\refint\IndustrialAnalytics.Domain.dll
 C:\Projects\IndustrailAI\src\IndustrialAnalytics.Domain\obj\Debug\net9.0\IndustrialAnalytics.Domain.pdb

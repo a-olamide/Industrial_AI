@@ -13,6 +13,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\IndustrialAnalytics.Contracts\IndustrialAnalytics.Contracts.csproj" />
     <ProjectReference Include="..\IndustrialAnalytics.Domain\IndustrialAnalytics.Domain.csproj" />
   </ItemGroup>
 

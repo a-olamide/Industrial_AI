@@ -1,0 +1,12 @@
+C:\Projects\IndustrailAI\src\IndustrialAnalytics.Contracts\bin\Debug\net9.0\IndustrialAnalytics.Contracts.deps.json
+C:\Projects\IndustrailAI\src\IndustrialAnalytics.Contracts\bin\Debug\net9.0\IndustrialAnalytics.Contracts.dll
+C:\Projects\IndustrailAI\src\IndustrialAnalytics.Contracts\bin\Debug\net9.0\IndustrialAnalytics.Contracts.pdb
+C:\Projects\IndustrailAI\src\IndustrialAnalytics.Contracts\obj\Debug\net9.0\IndustrialAnalytics.Contracts.GeneratedMSBuildEditorConfig.editorconfig
+C:\Projects\IndustrailAI\src\IndustrialAnalytics.Contracts\obj\Debug\net9.0\IndustrialAnalytics.Contracts.AssemblyInfoInputs.cache
+C:\Projects\IndustrailAI\src\IndustrialAnalytics.Contracts\obj\Debug\net9.0\IndustrialAnalytics.Contracts.AssemblyInfo.cs
+C:\Projects\IndustrailAI\src\IndustrialAnalytics.Contracts\obj\Debug\net9.0\IndustrialAnalytics.Contracts.csproj.CoreCompileInputs.cache
+C:\Projects\IndustrailAI\src\IndustrialAnalytics.Contracts\obj\Debug\net9.0\IndustrialAnalytics.Contracts.sourcelink.json
+C:\Projects\IndustrailAI\src\IndustrialAnalytics.Contracts\obj\Debug\net9.0\IndustrialAnalytics.Contracts.dll
+C:\Projects\IndustrailAI\src\IndustrialAnalytics.Contracts\obj\Debug\net9.0\refint\IndustrialAnalytics.Contracts.dll
+C:\Projects\IndustrailAI\src\IndustrialAnalytics.Contracts\obj\Debug\net9.0\IndustrialAnalytics.Contracts.pdb
+C:\Projects\IndustrailAI\src\IndustrialAnalytics.Contracts\obj\Debug\net9.0\ref\IndustrialAnalytics.Contracts.dll

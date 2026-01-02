@@ -1,4 +1,5 @@
-﻿using IndustrialAnalytics.Domain.Risk;
+﻿using IndustrialAnalytics.Contracts.Dtos;
+using IndustrialAnalytics.Domain.Risk;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -18,5 +19,12 @@ namespace IndustrialAnalytics.Infrastructure.Sql.Repositories
         Task<IReadOnlyList<(string AssetId, DateTime MinuteTs)>> GetDistinctMinutesSinceAsync(
             DateTime fromExclusive,
             CancellationToken ct);
+
+        Task<IReadOnlyList<AnomalyDto>> GetForAssetAsync(
+        string assetId,
+        DateTime fromUtc,
+        DateTime toUtc,
+        int take,
+        CancellationToken ct);
     }
 }

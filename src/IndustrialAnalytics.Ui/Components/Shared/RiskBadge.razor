@@ -1,0 +1,23 @@
+﻿<span class="badge @Css">
+    @Label (@Score)
+</span>
+
+@code {
+    [Parameter] public double Score { get; set; }
+
+    private string Css =>
+        Score switch
+        {
+            >= 80 => "bg-danger",
+            >= 50 => "bg-warning text-dark",
+            _ => "bg-success"
+        };
+
+    private string Label =>
+        Score switch
+        {
+            >= 80 => "HIGH",
+            >= 50 => "MEDIUM",
+            _ => "LOW"
+        };
+}
