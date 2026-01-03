@@ -1,4 +1,14 @@
-.vs/
 # Ignore build artifacts
 **/bin/
 **/obj/
+bin/
+obj/
+
+# Visual Studio files
+.vs/
+*.user
+*.suo
+
+# Others
+*.log
+*.tmp
