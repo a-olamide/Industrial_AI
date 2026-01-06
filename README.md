@@ -31,6 +31,7 @@ This project combines three major capabilities:
 ---
 
 ## High-level Architecture
+![generated-image](https://github.com/user-attachments/assets/13994273-d34b-4447-aef7-b4ca217d17ba)
 
 ### Data Model (Core Tables)
 ### Table	(Description)
