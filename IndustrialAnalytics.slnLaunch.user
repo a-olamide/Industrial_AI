@@ -3,6 +3,10 @@
     "Name": "New Profile",
     "Projects": [
       {
+        "Path": "src\\IndustrialAnalytics.Worker\\IndustrialAnalytics.Worker.csproj",
+        "Action": "Start"
+      },
+      {
         "Path": "src\\IndustrialAnalytics.Api\\IndustrialAnalytics.Api.csproj",
         "Action": "Start"
       },

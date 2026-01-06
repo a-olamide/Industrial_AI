@@ -1,6 +1,7 @@
 using IndustrialAnalytics.Api.Endpoints;
-using IndustrialAnalytics.Infrastructure.Sql.Repositories;
+using IndustrialAnalytics.Api.Services;
 using IndustrialAnalytics.Infrastructure.DependencyInjection;
+using IndustrialAnalytics.Infrastructure.Sql.Repositories;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -12,7 +13,14 @@ builder.Services.AddInfrastructure(builder.Configuration);
 builder.Services.AddScoped<IAssetQueryRepository, AssetQueryRepository>();
 builder.Services.AddScoped<IRiskQueryRepository, RiskQueryRepository>();
 builder.Services.AddScoped<IRecommendationCommandRepository, RecommendationCommandRepository>();
-
+builder.Services.Configure<LlmOptions>(builder.Configuration.GetSection("Llm"));
+//builder.Services.AddHttpClient<ILlmClient, OpenAiCompatibleLlmClient>();
+builder.Services.AddHttpClient<ILlmClient, OllamaLlmClient>(c =>
+{
+    c.BaseAddress = new Uri("http://localhost:11434");
+    c.Timeout = TimeSpan.FromMinutes(10);
+});
+builder.Services.AddScoped<AssetInsightService>();
 
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
@@ -46,6 +54,7 @@ v1.MapRisk();
 v1.MapRecommendations();
 v1.MapAssetRecommendations();
 v1.MapAnomalies();
+v1.MapInsights();
 
 app.Run();
 

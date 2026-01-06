@@ -1,5 +1,6 @@
 ﻿using IndustrialAnalytics.Contracts.Anomalies;
 using IndustrialAnalytics.Contracts.Assets;
+using IndustrialAnalytics.Contracts.Insights;
 using IndustrialAnalytics.Contracts.Recommendations;
 using IndustrialAnalytics.Contracts.Risk;
 
@@ -73,6 +74,19 @@ namespace IndustrialAnalytics.Ui.Services
 
             return http.GetFromJsonAsync<AnomalyListResponseDto>(
                 $"/api/v1/assets/{assetId}/anomalies?from={from}&to={to}", ct);
+        }
+        public async Task<AssetInsightDto?> GetInsightAsync(string assetId, DateTime fromUtc, DateTime toUtc, int take = 5, CancellationToken ct = default)
+        {
+            var from = Uri.EscapeDataString(fromUtc.ToString("O"));
+            var to = Uri.EscapeDataString(toUtc.ToString("O"));
+
+            using var req = new HttpRequestMessage(HttpMethod.Get,
+                $"/api/v1/assets/{assetId}/insight?from={from}&to={to}&take={take}");
+
+            using var resp = await http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+            if (!resp.IsSuccessStatusCode) return null;
+
+            return await resp.Content.ReadFromJsonAsync<AssetInsightDto>(cancellationToken: ct);
         }
     }
 }

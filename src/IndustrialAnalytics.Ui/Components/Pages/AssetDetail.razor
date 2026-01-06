@@ -1,4 +1,5 @@
 ﻿@page "/assets/{AssetId}"
+@using IndustrialAnalytics.Contracts.Insights
 @using IndustrialAnalytics.Ui.Components.Shared
 @inject IndustrialAnalytics.Ui.Services.InsightsApiClient Api
 
@@ -47,23 +48,83 @@ else
             <div><b>As of:</b> @_summary.AsOfMinuteTs</div>
         </div>
     }
+    <div class="card p-3 mb-3">
+        <div class="d-flex justify-content-between align-items-center">
+            <h5 class="mb-0">AI Insight</h5>
+            <div class="d-flex gap-2">
+                <button class="btn btn-sm btn-outline-primary" @onclick="RegenerateInsight" disabled="@_insightLoading">
+                    Regenerate
+                </button>
+                <button class="btn btn-sm btn-outline-secondary" @onclick="CancelInsight" disabled="@(!_insightLoading)">
+                    Cancel
+                </button>
+            </div>
+        </div>
+
+        @if (_insightLoading)
+        {
+            <div class="mt-2">
+                <span class="spinner-border spinner-border-sm me-2"></span>
+                Generating insight… (page is ready)
+            </div>
+        }
+        else if (!string.IsNullOrWhiteSpace(_insightError))
+        {
+            <div class="alert alert-warning mt-2 mb-0">@_insightError</div>
+        }
+        else if (_insight is not null)
+        {
+            <div class="mt-2">
+                <div class="fw-semibold">@_insight.Headline</div>
+                <div class="text-muted">@_insight.Summary</div>
+
+                @if (_insight.LikelyCauses?.Count > 0)
+                {
+                    <div class="mt-2">
+                        <div class="fw-semibold">Likely drivers</div>
+                        <ul class="mb-0">
+                            @foreach (var c in _insight.LikelyCauses)
+                            {
+                                <li>@c</li>
+                            }
+                        </ul>
+                    </div>
+                }
+
+                @if (_insight.RecommendedNextSteps?.Count > 0)
+                {
+                    <div class="mt-2">
+                        <div class="fw-semibold">Next steps</div>
+                        <ol class="mb-0">
+                            @foreach (var s in _insight.RecommendedNextSteps)
+                            {
+                                <li>@s</li>
+                            }
+                        </ol>
+                    </div>
+                }
+
+                <div class="mt-2 small text-muted">@_insight.Disclaimer</div>
+            </div>
+        }
+    </div>
     <h4>Risk trend</h4>
 
-@if (_risk is null || _risk.Count == 0)
-{
-    <p>No risk points in range.</p>
-}
-else
-{
+    @if (_risk is null || _risk.Count == 0)
+    {
+        <p>No risk points in range.</p>
+    }
+    else
+    {
         <RiskSparkline Points="_risk" AnomalyTimesUtc="_anomalyTimes" />
 
 
 
-    <div class="mt-2">
-        <b>Current risk:</b>
-        <RiskBadge Score="@_risk.Last().Score" />
-    </div>
-}
+        <div class="mt-2">
+            <b>Current risk:</b>
+            <RiskBadge Score="@_risk.Last().Score" />
+        </div>
+    }
     <h4>Risk points</h4>
     @if (_risk is null || _risk.Count == 0)
     {
@@ -130,31 +191,114 @@ else
             </tbody>
         </table>
     }
+
+
 }
 
 @code {
+    private AssetInsightDto? _insight;
+    private bool _insightLoading;
+    private string? _insightError;
+
+    private CancellationTokenSource? _insightCts;
+    private long _insightRunId;
+
+    // ---- existing fields you already have ----
     private List<DateTime> _anomalyTimes = new();
-
     [Parameter] public string AssetId { get; set; } = "";
-
     private bool _loading = true;
-
     private IndustrialAnalytics.Contracts.Assets.AssetSummaryDto? _summary;
     private List<IndustrialAnalytics.Contracts.Risk.RiskPointDto>? _risk;
-
-    // If you don't have AssetRecommendationsResponseDto in Contracts, make this dynamic:
-    // private dynamic? _recs;
     private IndustrialAnalytics.Contracts.Assets.AssetRecommendationsResponseDto? _recs;
-
-    // Bind datetime-local directly to DateTime (avoids TimeOnly/string issues)
     private DateTime? _from = new DateTime(2025, 1, 1, 12, 0, 0, DateTimeKind.Utc);
-    private DateTime? _to = new DateTime(2025, 1, 1, 14, 0, 0, DateTimeKind.Utc);
-
+    private DateTime? _to = new DateTime(2025, 1, 1, 18, 0, 0, DateTimeKind.Utc);
     private const string UserName = "blazor-ui";
 
-    protected override async Task OnParametersSetAsync() => await Reload();
+    protected override async Task OnParametersSetAsync()
+    {
+        await Reload();     // load summary/risk/recs/anomalies only
+        // do NOT start insight here
+    }
 
-    private async Task Reload()
+    protected override Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            // background kick-off (non-blocking)
+            _ = StartInsightAsync(background: true);
+        }
+        return Task.CompletedTask;
+    }
+
+    // --- main entry point used by both initial load and regenerate ---
+    private async Task StartInsightAsync(bool background)
+    {
+        CancelInsight(); // cancel prior run if any
+
+        _insightRunId++;
+        var runId = _insightRunId;
+
+        _insightCts = new CancellationTokenSource();
+        var ct = _insightCts.Token;
+
+        _insightLoading = true;
+        _insightError = null;
+
+        // show spinner immediately
+        await InvokeAsync(StateHasChanged);
+
+        try
+        {
+            var fromUtc = DateTime.SpecifyKind((_from ?? DateTime.UtcNow.AddHours(-2)), DateTimeKind.Utc);
+            var toUtc = DateTime.SpecifyKind((_to ?? DateTime.UtcNow), DateTimeKind.Utc);
+
+            var dto = await Api.GetInsightAsync(AssetId, fromUtc, toUtc, take: 5, ct);
+
+            // ignore stale completions
+            if (runId != _insightRunId) return;
+
+            _insight = dto;
+            _insightError = dto is null ? "No insight returned." : null;
+        }
+        catch (OperationCanceledException)
+        {
+            if (runId != _insightRunId) return;
+            _insightError = "Insight cancelled.";
+        }
+        catch (Exception ex)
+        {
+            if (runId != _insightRunId) return;
+            _insightError = $"Insight failed: {ex.Message}";
+        }
+        finally
+        {
+            if (runId == _insightRunId)
+            {
+                _insightLoading = false;
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+    }
+
+    // IMPORTANT: make this Task-returning so Blazor awaits it properly
+    private Task RegenerateInsight() => StartInsightAsync(background: false);
+
+    private void CancelInsight()
+    {
+        try
+        {
+            _insightCts?.Cancel();
+        }
+        catch { /* ignore */ }
+        finally
+        {
+            _insightCts?.Dispose();
+            _insightCts = null;
+        }
+    }
+
+
+    private async Task ReloadCore()
     {
         _loading = true;
 
@@ -175,6 +319,17 @@ else
 
         _loading = false;
     }
+  
+  
+    private async Task Reload()
+    {
+        await ReloadCore();
+
+        // optional: refresh insight after a reload
+        //StartInsight();
+    }
+   
+
 
     private async Task Ack(long id)
     {
