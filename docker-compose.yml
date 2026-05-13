@@ -58,6 +58,67 @@ services:
       - -C
     restart: "no"
 
+  # ── Apache Kafka 3.9 (KRaft — no ZooKeeper) ────────────────────────────────
+  # Two listeners:
+  #   PLAINTEXT_HOST  → localhost:9092   used by the .NET producer running on your Mac
+  #   PLAINTEXT_INT   → kafka:29092      used by other containers (Spark, kafka-init)
+  kafka:
+    image: apache/kafka:3.9.0
+    container_name: industrial_kafka
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT_HOST://0.0.0.0:9092,PLAINTEXT_INT://0.0.0.0:29092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT_HOST://localhost:9092,PLAINTEXT_INT://kafka:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT_HOST:PLAINTEXT,PLAINTEXT_INT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT_INT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test:
+        - CMD
+        - /opt/kafka/bin/kafka-topics.sh
+        - --bootstrap-server
+        - localhost:9092
+        - --list
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+
+  # ── One-shot topic creation ────────────────────────────────────────────────
+  # Creates the industrial-telemetry topic once Kafka is healthy.
+  # --if-not-exists makes it safe to re-run.
+  kafka-init:
+    image: apache/kafka:3.9.0
+    container_name: industrial_kafka_init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    command:
+      - /opt/kafka/bin/kafka-topics.sh
+      - --bootstrap-server
+      - kafka:29092
+      - --create
+      - --if-not-exists
+      - --topic
+      - industrial-telemetry
+      - --partitions
+      - "6"
+      - --replication-factor
+      - "1"
+    restart: "no"
+
   # ── Grafana ────────────────────────────────────────────────────────────────
   grafana:
     image: grafana/grafana:latest
@@ -74,3 +135,4 @@ services:
 
 volumes:
   sqlserver_data:
+  kafka_data:
