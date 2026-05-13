@@ -1,6 +1,64 @@
 version: "3.8"
 
 services:
+
+  # ── SQL Server 2022 ────────────────────────────────────────────────────────
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: industrial_sqlserver
+    ports:
+      - "1433:1433"
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "IndustrialAI#2026"
+    volumes:
+      - sqlserver_data:/var/opt/mssql
+    healthcheck:
+      test:
+        - CMD
+        - /opt/mssql-tools18/bin/sqlcmd
+        - -S
+        - localhost
+        - -U
+        - sa
+        - -P
+        - "IndustrialAI#2026"
+        - -Q
+        - "SELECT 1"
+        - -b
+        - -C
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 30s
+    restart: unless-stopped
+
+  # ── One-shot schema init (runs once, exits) ────────────────────────────────
+  # Waits for sqlserver to pass its healthcheck, then applies db/init.sql.
+  # Re-running docker-compose up is safe: every CREATE is guarded.
+  sqlserver-init:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: industrial_sqlserver_init
+    depends_on:
+      sqlserver:
+        condition: service_healthy
+    volumes:
+      - ./db:/init:ro
+    command:
+      - /opt/mssql-tools18/bin/sqlcmd
+      - -S
+      - sqlserver
+      - -U
+      - sa
+      - -P
+      - "IndustrialAI#2026"
+      - -i
+      - /init/init.sql
+      - -b
+      - -C
+    restart: "no"
+
+  # ── Grafana ────────────────────────────────────────────────────────────────
   grafana:
     image: grafana/grafana:latest
     container_name: industrial_grafana
@@ -13,3 +71,6 @@ services:
       - ./grafana/provisioning:/etc/grafana/provisioning
       - ./grafana/dashboards:/var/lib/grafana/dashboards
     restart: unless-stopped
+
+volumes:
+  sqlserver_data:
