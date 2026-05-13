@@ -16,5 +16,7 @@
     <PackageVersion Include="Serilog.Settings.Configuration" Version="9.0.0" />
     <PackageVersion Include="Serilog.Sinks.Console" Version="6.0.0" />
     <PackageVersion Include="Swashbuckle.AspNetCore" Version="9.0.6" />
+    <!-- Kafka streaming -->
+    <PackageVersion Include="Confluent.Kafka" Version="2.6.0" />
   </ItemGroup>
 </Project>

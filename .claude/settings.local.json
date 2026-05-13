@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(Get-ChildItem \"C:\\\\Projects\\\\IndustrailAI\\\\IndustrialTelemetry.Producer\" -Recurse | ForEach-Object { $_.FullName })"
+    ]
+  }
+}
