@@ -3,7 +3,8 @@
     "allow": [
       "PowerShell(Get-ChildItem \"C:\\\\Projects\\\\IndustrailAI\\\\IndustrialTelemetry.Producer\" -Recurse | ForEach-Object { $_.FullName })",
       "PowerShell(Get-ChildItem -Path \"C:\\\\Projects\\\\IndustrailAI\" -Recurse -Directory | Select-Object -First 30 | ForEach-Object { $_.FullName })",
-      "PowerShell(New-Item *)"
+      "PowerShell(New-Item *)",
+      "PowerShell(Get-ChildItem \"C:\\\\Projects\\\\IndustrailAI\\\\spark\" -Recurse | ForEach-Object { $_.FullName.Replace\\(\"C:\\\\Projects\\\\IndustrailAI\\\\\", \"\"\\) })"
     ]
   }
 }

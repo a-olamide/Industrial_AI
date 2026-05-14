@@ -182,6 +182,61 @@ BEGIN
 END
 GO
 
+-- ── 7. telemetry_raw ─────────────────────────────────────────
+-- Raw event log written by Spark Stream 1 (append-only).
+-- Serves as the source-of-truth audit trail from Kafka.
+IF OBJECT_ID('dbo.telemetry_raw', 'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.telemetry_raw (
+        id               BIGINT        NOT NULL IDENTITY(1,1),
+        asset_id         NVARCHAR(64)  NOT NULL,
+        asset_type       NVARCHAR(64)  NULL,
+        ts               DATETIME2(3)  NOT NULL,
+        tag              NVARCHAR(64)  NOT NULL,
+        value            FLOAT         NULL,
+        quality          INT           NOT NULL,
+        kafka_offset     BIGINT        NULL,
+        kafka_partition  INT           NULL,
+        inserted_at      DATETIME2(0)  NOT NULL CONSTRAINT df_tr_inserted_at DEFAULT SYSUTCDATETIME(),
+
+        CONSTRAINT pk_telemetry_raw PRIMARY KEY (id)
+    );
+
+    CREATE INDEX ix_tr_asset_ts ON dbo.telemetry_raw (asset_id, ts);
+    CREATE INDEX ix_tr_ts       ON dbo.telemetry_raw (ts);
+
+    PRINT 'Created dbo.telemetry_raw';
+END
+GO
+
+-- ── 8. asset_minute_fact ─────────────────────────────────────
+-- 1-minute windowed aggregations written by Spark Stream 2.
+-- Lightweight fact table; asset_minute_features holds the ML-ready columns.
+IF OBJECT_ID('dbo.asset_minute_fact', 'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.asset_minute_fact (
+        asset_id          NVARCHAR(64)  NOT NULL,
+        minute_ts         DATETIME2(0)  NOT NULL,
+        avg_temp_c        FLOAT         NULL,
+        avg_vib_mm_s      FLOAT         NULL,
+        avg_pressure_bar  FLOAT         NULL,
+        avg_current_a     FLOAT         NULL,
+        avg_flow_m3h      FLOAT         NULL,
+        event_count       INT           NOT NULL,
+        fault_code_max    INT           NULL,
+        computed_at       DATETIME2(0)  NOT NULL CONSTRAINT df_amf2_computed_at DEFAULT SYSUTCDATETIME(),
+
+        CONSTRAINT pk_asset_minute_fact PRIMARY KEY (asset_id, minute_ts)
+    );
+
+    CREATE INDEX ix_amf2_minute_ts
+        ON dbo.asset_minute_fact (minute_ts)
+        INCLUDE (asset_id, avg_temp_c, avg_vib_mm_s);
+
+    PRINT 'Created dbo.asset_minute_fact';
+END
+GO
+
 PRINT '-------------------------------------------------------';
 PRINT 'Schema initialisation complete — Industrail_AI is ready.';
 PRINT '-------------------------------------------------------';

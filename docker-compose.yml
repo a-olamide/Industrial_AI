@@ -141,6 +141,29 @@ services:
       - ./grafana/dashboards:/var/lib/grafana/dashboards
     restart: unless-stopped
 
+  # ── Spark Structured Streaming (local[2] mode) ────────────────────────────
+  # Packages are downloaded from Maven on first boot (~2 min) and cached in
+  # spark_ivy_cache so subsequent restarts are fast.
+  # Spark job UI → http://localhost:4040  (only while job is running)
+  spark:
+    image: bitnami/spark:3.5
+    container_name: industrial_spark
+    depends_on:
+      kafka:
+        condition: service_healthy
+      sqlserver:
+        condition: service_healthy
+    ports:
+      - "4040:4040"
+    volumes:
+      - ./spark/jobs:/opt/spark/jobs:ro
+      - ./spark/checkpoints:/opt/spark/checkpoints
+      - ./spark/submit.sh:/opt/spark/submit.sh:ro
+      - spark_ivy_cache:/root/.ivy2
+    entrypoint: ["/bin/bash", "/opt/spark/submit.sh"]
+    restart: unless-stopped
+
 volumes:
   sqlserver_data:
   kafka_data:
+  spark_ivy_cache:
