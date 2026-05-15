@@ -1,5 +1,7 @@
 using System.Diagnostics;
 using IndustrialTelemetry.Producer.Models;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace IndustrialTelemetry.Producer.Services;
 
@@ -10,30 +12,74 @@ public sealed class TelemetrySimulator
 
     private readonly Random _rng = new();
     private readonly Stopwatch _uptime = Stopwatch.StartNew();
+    private readonly ILogger<TelemetrySimulator> _logger;
+    private readonly AnomalyOptions _anomalyOpts;
+
+    // Per-asset active anomaly: type + UTC expiry
+    private readonly Dictionary<string, (AnomalyType Type, DateTimeOffset ExpiresAt)> _activeAnomalies = new();
 
     public IReadOnlyList<AssetProfile> Assets { get; } = BuildProfiles();
+
+    public TelemetrySimulator(ILogger<TelemetrySimulator> logger, IOptions<AnomalyOptions> anomalyOptions)
+    {
+        _logger = logger;
+        _anomalyOpts = anomalyOptions.Value;
+    }
 
     public IEnumerable<TelemetryEvent> GenerateEvents(AssetProfile asset)
     {
         var ts = DateTimeOffset.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ");
         var minutesElapsed = _uptime.Elapsed.TotalMinutes;
+        var anomalyType = UpdateAnomalyState(asset);
 
-        var tagValues = ComputeTagValues(asset, minutesElapsed);
+        var tagValues = ComputeTagValues(asset, minutesElapsed, anomalyType);
         var faultCode = ComputeFaultCode(tagValues);
 
         yield return Make(asset, ts, "run_state", 1.0, QualityGood);
         yield return Make(asset, ts, "fault_code", faultCode, faultCode > 0 ? QualityUncertain : QualityGood);
 
+        // Always emit quality=192 for sensor tags so Spark never filters anomaly readings.
         foreach (var (tag, value) in tagValues)
-        {
-            var quality = IsWithinNominalRange(tag, value) ? QualityGood : QualityUncertain;
-            yield return Make(asset, ts, tag, Math.Round(value, 3), quality);
-        }
+            yield return Make(asset, ts, tag, Math.Round(value, 3), QualityGood);
     }
+
+    // ── Anomaly state machine ────────────────────────────────────────────────
+
+    private AnomalyType UpdateAnomalyState(AssetProfile asset)
+    {
+        if (_activeAnomalies.TryGetValue(asset.AssetId, out var current))
+        {
+            if (DateTimeOffset.UtcNow < current.ExpiresAt)
+                return current.Type;
+
+            _logger.LogInformation(
+                "ANOMALY END   | asset={AssetId} | type={Type}",
+                asset.AssetId, current.Type);
+            _activeAnomalies.Remove(asset.AssetId);
+        }
+
+        // Roll the dice — only start a new anomaly when none is active
+        if (_rng.NextDouble() >= _anomalyOpts.Probability)
+            return AnomalyType.None;
+
+        var type = PickAnomalyType();
+        var expiry = DateTimeOffset.UtcNow.AddSeconds(_anomalyOpts.DurationSeconds);
+        _activeAnomalies[asset.AssetId] = (type, expiry);
+
+        _logger.LogWarning(
+            "ANOMALY START | asset={AssetId} | type={Type} | duration={Dur}s",
+            asset.AssetId, type, _anomalyOpts.DurationSeconds);
+
+        return type;
+    }
+
+    private AnomalyType PickAnomalyType()
+        // AnomalyType values 1–6 map to the six anomaly types; 0 = None
+        => (AnomalyType)(_rng.Next(6) + 1);
 
     // ── Tag value computation ────────────────────────────────────────────────
 
-    private Dictionary<string, double> ComputeTagValues(AssetProfile asset, double minutesElapsed)
+    private Dictionary<string, double> ComputeTagValues(AssetProfile asset, double minutesElapsed, AnomalyType anomaly)
     {
         var values = new Dictionary<string, double>(asset.TagSpecs.Count);
 
@@ -43,7 +89,49 @@ public sealed class TelemetrySimulator
         if (asset.HealthState == AssetHealthState.VibrationSpike)
             ApplyVibrationSpike(values, minutesElapsed);
 
+        if (anomaly != AnomalyType.None)
+            ApplyAnomaly(values, anomaly);
+
         return values;
+    }
+
+    private void ApplyAnomaly(Dictionary<string, double> values, AnomalyType anomaly)
+    {
+        switch (anomaly)
+        {
+            case AnomalyType.Overheating:
+                // 92–100 °C  — Spark critical threshold: > 88
+                values["temp_bearing_c"] = 92.0 + _rng.NextDouble() * 8.0;
+                break;
+
+            case AnomalyType.HighVibration:
+                // 8–12 mm/s  — Spark critical threshold: > 7
+                values["vib_rms_mm_s"] = 8.0 + _rng.NextDouble() * 4.0;
+                break;
+
+            case AnomalyType.HighCurrent:
+                // 32–38 A    — Spark critical threshold: > 30
+                values["motor_current_a"] = 32.0 + _rng.NextDouble() * 6.0;
+                break;
+
+            case AnomalyType.LowFlow:
+                // 55–65 m³/h — Spark critical threshold: < 70
+                values["flow_rate_m3_h"] = 55.0 + _rng.NextDouble() * 10.0;
+                break;
+
+            case AnomalyType.LowDischargePressure:
+                // 4–5 bar    — Spark critical threshold: < 5.5
+                values["discharge_pressure_bar"] = 4.0 + _rng.NextDouble() * 1.0;
+                break;
+
+            case AnomalyType.CombinedFailure:
+                values["temp_bearing_c"]        = 92.0 + _rng.NextDouble() * 8.0;
+                values["vib_rms_mm_s"]           = 8.0  + _rng.NextDouble() * 4.0;
+                values["motor_current_a"]        = 32.0 + _rng.NextDouble() * 6.0;
+                values["flow_rate_m3_h"]         = 55.0 + _rng.NextDouble() * 10.0;
+                values["discharge_pressure_bar"] = 4.0  + _rng.NextDouble() * 1.0;
+                break;
+        }
     }
 
     private void ApplyVibrationSpike(Dictionary<string, double> values, double minutesElapsed)
@@ -67,23 +155,13 @@ public sealed class TelemetrySimulator
     private static int ComputeFaultCode(Dictionary<string, double> v)
     {
         var code = 0;
-        if (v.TryGetValue("temp_bearing_c", out var t) && t > 80.0)          code |= 1;
-        if (v.TryGetValue("vib_rms_mm_s", out var vib) && vib > 5.0)         code |= 2;
-        if (v.TryGetValue("motor_current_a", out var i) && i > 28.0)         code |= 4;
-        if (v.TryGetValue("flow_rate_m3_h", out var f) && f < 80.0)          code |= 8;
-        if (v.TryGetValue("discharge_pressure_bar", out var p) && p < 6.0)   code |= 16;
+        if (v.TryGetValue("temp_bearing_c",         out var t)   && t   > 80.0) code |= 1;
+        if (v.TryGetValue("vib_rms_mm_s",           out var vib) && vib > 5.0)  code |= 2;
+        if (v.TryGetValue("motor_current_a",        out var i)   && i   > 28.0) code |= 4;
+        if (v.TryGetValue("flow_rate_m3_h",         out var f)   && f   < 80.0) code |= 8;
+        if (v.TryGetValue("discharge_pressure_bar", out var p)   && p   < 6.0)  code |= 16;
         return code;
     }
-
-    private static bool IsWithinNominalRange(string tag, double value) => tag switch
-    {
-        "temp_bearing_c"         => value is >= 10.0 and < 80.0,
-        "vib_rms_mm_s"           => value is >= 0.0  and < 5.0,
-        "motor_current_a"        => value is >= 0.0  and < 28.0,
-        "flow_rate_m3_h"         => value > 80.0,
-        "discharge_pressure_bar" => value > 6.0,
-        _                        => true
-    };
 
     // ── Utilities ────────────────────────────────────────────────────────────
 
@@ -159,7 +237,6 @@ public sealed class TelemetrySimulator
         },
 
         // FAN_001 — Vibration spikes: stochastic high-amplitude transients
-        // (spike injection handled in ApplyVibrationSpike)
         new()
         {
             AssetId = "FAN_001",

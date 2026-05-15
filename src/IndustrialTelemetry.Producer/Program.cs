@@ -7,6 +7,7 @@ var host = Host.CreateDefaultBuilder(args)
     {
         services.Configure<KafkaOptions>(ctx.Configuration.GetSection("Kafka"));
         services.Configure<TelemetryOptions>(ctx.Configuration.GetSection("Telemetry"));
+        services.Configure<AnomalyOptions>(ctx.Configuration.GetSection("Anomaly"));
         services.AddSingleton<TelemetrySimulator>();
         services.AddHostedService<KafkaTelemetryProducer>();
     })

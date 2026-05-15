@@ -22,6 +22,12 @@ public sealed class TelemetryOptions
     public int EmitIntervalMs { get; init; } = 1000;
 }
 
+public sealed class AnomalyOptions
+{
+    public double Probability { get; init; } = 0.05;
+    public int DurationSeconds { get; init; } = 30;
+}
+
 public sealed class KafkaTelemetryProducer : BackgroundService
 {
     private static readonly JsonSerializerOptions JsonOpts = new() { WriteIndented = false };

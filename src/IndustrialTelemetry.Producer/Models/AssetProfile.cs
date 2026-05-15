@@ -9,6 +9,17 @@ public enum AssetHealthState
     CurrentDrift
 }
 
+public enum AnomalyType
+{
+    None                 = 0,
+    Overheating          = 1,
+    HighVibration        = 2,
+    HighCurrent          = 3,
+    LowFlow              = 4,
+    LowDischargePressure = 5,
+    CombinedFailure      = 6
+}
+
 /// <summary>
 /// Defines the simulation behaviour for a single tag on an asset.
 /// DegradationDelta is the total value shift applied once fully degraded (negative = decreasing).
