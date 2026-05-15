@@ -146,7 +146,7 @@ services:
   # spark_ivy_cache so subsequent restarts are fast.
   # Spark job UI → http://localhost:4040  (only while job is running)
   spark:
-    image: bitnami/spark:3.5
+    image: apache/spark:3.5.1
     container_name: industrial_spark
     depends_on:
       kafka:
@@ -159,11 +159,10 @@ services:
       - ./spark/jobs:/opt/spark/jobs:ro
       - ./spark/checkpoints:/opt/spark/checkpoints
       - ./spark/submit.sh:/opt/spark/submit.sh:ro
-      - spark_ivy_cache:/root/.ivy2
+      - ./spark/.ivy2:/home/spark/.ivy2
     entrypoint: ["/bin/bash", "/opt/spark/submit.sh"]
     restart: unless-stopped
 
 volumes:
   sqlserver_data:
   kafka_data:
-  spark_ivy_cache:

@@ -15,11 +15,11 @@ builder.Services.AddScoped<IRiskQueryRepository, RiskQueryRepository>();
 builder.Services.AddScoped<IRecommendationCommandRepository, RecommendationCommandRepository>();
 builder.Services.Configure<LlmOptions>(builder.Configuration.GetSection("Llm"));
 //builder.Services.AddHttpClient<ILlmClient, OpenAiCompatibleLlmClient>();
-// builder.Services.AddHttpClient<ILlmClient, OllamaLlmClient>(c =>
-// {
-//     c.BaseAddress = new Uri("http://localhost:11434");
-//     c.Timeout = TimeSpan.FromMinutes(10);
-// });
+builder.Services.AddHttpClient<ILlmClient, OllamaLlmClient>(c =>
+{
+    c.BaseAddress = new Uri("http://localhost:11434");
+    c.Timeout = TimeSpan.FromMinutes(10);
+});
 builder.Services.AddScoped<AssetInsightService>();
 
 builder.Services.AddEndpointsApiExplorer();
