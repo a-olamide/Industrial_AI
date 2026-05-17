@@ -5,16 +5,26 @@ Reads from Kafka topic `industrial-telemetry`, processes in real-time,
 and writes results to SQL Server (operational) and Hive (persistent).
 
 Write targets
-  ┌─────────────────────────┬─────────────┬──────┐
-  │ Table                   │ SQL Server  │ Hive │
-  ├─────────────────────────┼─────────────┼──────┤
-  │ telemetry_raw           │ append 10s  │  ✓   │
-  │ asset_minute_fact       │ append 60s  │  ✓   │
-  │ asset_minute_features   │ append 60s  │  ✓   │
-  │ asset_anomaly_events    │ append 60s  │  ✓   │
-  │ asset_risk_minute       │ append 60s  │  ✓   │
-  │ asset_risk_current      │ MERGE 60s   │  —   │  ← dashboard
-  └─────────────────────────┴─────────────┴──────┘
+  ┌──────────────────────────────┬─────────────┬──────┐
+  │ Table                        │ SQL Server  │ Hive │
+  ├──────────────────────────────┼─────────────┼──────┤
+  │ telemetry_raw                │ append 10s  │  ✓   │
+  │ asset_minute_fact            │ append 60s  │  ✓   │
+  │ asset_minute_features        │ append 60s  │  ✓   │
+  │ asset_anomaly_events         │ append 60s  │  ✓   │
+  │ asset_risk_minute            │ append 60s  │  ✓   │
+  │ asset_risk_current           │ MERGE 60s   │  —   │  ← dashboard
+  │ asset_enriched_minute (Hive) │  —          │  ✓   │  ← SQL join
+  └──────────────────────────────┴─────────────┴──────┘
+
+Spark SQL join (bonus)
+  asset_profiles.csv is loaded at startup as a static broadcast DataFrame
+  and registered as a Spark SQL temp view.  Each analytics micro-batch is
+  also registered as a temp view so a plain SQL SELECT … JOIN … can enrich
+  the streaming aggregates with static asset metadata (location, criticality,
+  manufacturer, maintenance schedule).  The criticality_weight column is used
+  to adjust the raw risk score, making HIGH-criticality assets score higher
+  for the same sensor readings.
 
 Hive uses an embedded Derby metastore and stores data as Parquet files
 in the managed warehouse.  SQL Server remains the operational serving
@@ -64,6 +74,8 @@ CHECKPOINT_DIR      = "/opt/spark/checkpoints"
 HIVE_WAREHOUSE_DIR  = "/opt/spark/hive-warehouse"
 DERBY_METASTORE_DIR = "/opt/spark/metastore/derby-metastore"
 HIVE_DB             = "industrial"
+
+ASSET_PROFILES_CSV  = "/opt/spark/jobs/asset_profiles.csv"
 
 JDBC_OPTS = {
     "url":      JDBC_URL,
@@ -175,6 +187,35 @@ def init_hive_db(spark: SparkSession) -> None:
     """Create the Hive database on first run (idempotent)."""
     spark.sql(f"CREATE DATABASE IF NOT EXISTS {HIVE_DB}")
     log.info(f"[hive] Database '{HIVE_DB}' ready — warehouse: {HIVE_WAREHOUSE_DIR}")
+
+
+# ── Static dataset — asset profiles ───────────────────────────────────────────
+
+def load_asset_profiles(spark: SparkSession) -> None:
+    """
+    Load asset_profiles.csv as a broadcast static DataFrame and register it
+    as a Spark SQL temp view so foreachBatch handlers can join against it
+    with plain SQL without re-reading the file on every micro-batch.
+
+    Columns: asset_id, location, asset_category, manufacturer, install_year,
+             rated_capacity_pct, maintenance_interval_days, criticality,
+             criticality_weight
+    """
+    profiles_df = (
+        spark.read
+        .option("header", "true")
+        .option("inferSchema", "true")
+        .csv(ASSET_PROFILES_CSV)
+    )
+    # broadcast hint keeps the small CSV in executor memory — no shuffle needed
+    from pyspark.sql.functions import broadcast
+    spark.createDataFrame(
+        broadcast(profiles_df).collect(),
+        schema=profiles_df.schema,
+    ).createOrReplaceTempView("asset_profiles")
+
+    count = profiles_df.count()
+    log.info(f"[profiles] Loaded {count} asset profiles from {ASSET_PROFILES_CSV}")
 
 
 def hive_write(df, table: str, batch_id: int = -1) -> None:
@@ -323,12 +364,19 @@ def build_minute_agg(spread_df):
 
 # ── Anomaly detection + risk scoring ──────────────────────────────────────────
 
-def detect_and_score(rows):
+def detect_and_score(rows, criticality_weights: dict = None):
     """
     Pure-Python threshold scan over the aggregated rows.
+
+    criticality_weights — dict of {asset_id: float} from the static asset
+    profiles join.  A weight > 1.0 (HIGH criticality) scales the raw risk
+    score up so that the same sensor reading matters more for critical assets.
+
     Returns (anomaly_rows, risk_rows) — lists of dicts ready for createDataFrame.
     """
-    anomaly_rows, risk_rows = [], []
+    weights       = criticality_weights or {}
+    anomaly_rows  = []
+    risk_rows     = []
 
     for r in rows:
         asset_id  = r["asset_id"]
@@ -362,7 +410,11 @@ def detect_and_score(rows):
 
         anomaly_rows.extend(anoms)
 
-        score   = min(sum(20 if a["severity"] == 2 else 10 for a in anoms), 100)
+        # Base score + criticality weight from static asset profiles join
+        base_score = sum(20 if a["severity"] == 2 else 10 for a in anoms)
+        weight     = weights.get(asset_id, 1.0)
+        score      = min(round(base_score * weight), 100)
+
         level   = ("CRITICAL" if score >= 90 else
                    "HIGH"     if score >= 70 else
                    "MEDIUM"   if score >= 30 else "LOW")
@@ -376,7 +428,10 @@ def detect_and_score(rows):
             "risk_level":    level,
             "failure_mode":  mode,
             "top_drivers":   drivers,
-            "evidence_json": json.dumps({"anomaly_count": len(anoms)}),
+            "evidence_json": json.dumps({
+                "anomaly_count":       len(anoms),
+                "criticality_weight":  weight,
+            }),
         })
 
     return anomaly_rows, risk_rows
@@ -448,6 +503,37 @@ def write_analytics_batch(batch_df, batch_id):
         _suppress_dup(e, "asset_minute_fact", batch_id)
     hive_write(fact_df, "asset_minute_fact", batch_id)
 
+    # ── Spark SQL join: streaming batch ⋈ static asset profiles ──────────────
+    # Register this micro-batch as a temp view so it can be referenced in SQL.
+    # The asset_profiles view was registered once at startup from the CSV.
+    batch_df.createOrReplaceTempView("streaming_minute_batch")
+
+    enriched_df = spark.sql("""
+        SELECT
+            s.asset_id,
+            s.minute_ts,
+            s.avg_temp_c,
+            s.avg_vib_mm_s,
+            s.avg_current_a,
+            s.avg_flow_m3h,
+            s.avg_pressure_bar,
+            s.event_count,
+            s.fault_code_max,
+            COALESCE(p.location,                   'Unknown')  AS location,
+            COALESCE(p.asset_category,             'Unknown')  AS asset_category,
+            COALESCE(p.manufacturer,               'Unknown')  AS manufacturer,
+            COALESCE(p.install_year,               0)          AS install_year,
+            COALESCE(p.rated_capacity_pct,         100.0)      AS rated_capacity_pct,
+            COALESCE(p.maintenance_interval_days,  90)         AS maintenance_interval_days,
+            COALESCE(p.criticality,                'MEDIUM')   AS criticality,
+            COALESCE(p.criticality_weight,         1.0)        AS criticality_weight
+        FROM streaming_minute_batch s
+        LEFT JOIN asset_profiles p ON s.asset_id = p.asset_id
+    """)
+
+    hive_write(enriched_df, "asset_enriched_minute", batch_id)
+    log.info(f"[sql-join] batch={batch_id} enriched {enriched_df.count()} rows with asset profiles")
+
     # ── asset_minute_features ─────────────────────────────────────────────────
     feat_df = batch_df.select(
         col("asset_id"),
@@ -473,7 +559,19 @@ def write_analytics_batch(batch_df, batch_id):
     hive_write(feat_df, "asset_minute_features", batch_id)
 
     # ── Anomaly detection + risk scoring ──────────────────────────────────────
-    anomaly_rows, risk_rows = detect_and_score(rows)
+    # Pull criticality weights from the static profile view so risk scores
+    # reflect asset importance (HIGH-criticality assets score higher).
+    try:
+        weight_map = {
+            r["asset_id"]: float(r["criticality_weight"])
+            for r in spark.sql(
+                "SELECT asset_id, criticality_weight FROM asset_profiles"
+            ).collect()
+        }
+    except Exception:
+        weight_map = {}
+
+    anomaly_rows, risk_rows = detect_and_score(rows, weight_map)
 
     if anomaly_rows:
         anom_df = spark.createDataFrame(anomaly_rows, ANOMALY_SCHEMA)
@@ -516,6 +614,14 @@ def main():
         init_hive_db(spark)
     except Exception as exc:
         log.error(f"[hive] Metastore init failed — Hive writes will be skipped: {exc}")
+
+    # Load static asset profiles CSV and register as Spark SQL temp view.
+    # This is the "join streaming with static dataset" step — the view persists
+    # for the lifetime of the SparkSession and is joined in every analytics batch.
+    try:
+        load_asset_profiles(spark)
+    except Exception as exc:
+        log.error(f"[profiles] Failed to load asset profiles — enrichment disabled: {exc}")
 
     raw_df    = read_kafka(spark)
     events_df = parse_events(raw_df)

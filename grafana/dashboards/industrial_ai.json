@@ -3,26 +3,51 @@
   "uid": "industrial-ai-v1",
   "title": "Industrial AI — Asset Monitoring",
   "schemaVersion": 38,
-  "version": 1,
+  "version": 3,
   "refresh": "10s",
   "time": { "from": "now-1h", "to": "now" },
   "timepicker": {},
   "tags": ["industrial", "predictive-maintenance"],
   "annotations": { "list": [] },
-  "templating": { "list": [] },
   "links": [],
+
+  "templating": {
+    "list": [
+      {
+        "name": "asset_id",
+        "label": "Asset",
+        "type": "query",
+        "datasource": { "type": "mssql", "uid": "industrial-ai-mssql" },
+        "query": "SELECT DISTINCT asset_id FROM dbo.asset_risk_current ORDER BY asset_id",
+        "refresh": 2,
+        "sort": 1,
+        "includeAll": true,
+        "multi": true,
+        "allValue": null,
+        "current": { "selected": true, "text": "All", "value": "$__all" },
+        "options": [],
+        "hide": 0
+      }
+    ]
+  },
+
   "panels": [
     {
       "id": 1,
       "title": "Current Risk Score by Asset",
       "type": "bargauge",
       "datasource": { "type": "mssql", "uid": "industrial-ai-mssql" },
-      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 6 },
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
       "options": {
         "orientation": "horizontal",
-        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "reduceOptions": {
+          "values": false,
+          "calcs": ["lastNotNull"],
+          "fields": ""
+        },
         "displayMode": "gradient",
-        "minVizWidth": 0
+        "minVizWidth": 0,
+        "showUnfilled": true
       },
       "fieldConfig": {
         "defaults": {
@@ -36,14 +61,26 @@
               { "color": "orange", "value": 70 },
               { "color": "red", "value": 90 }
             ]
-          }
+          },
+          "mappings": []
         },
         "overrides": []
       },
+      "transformations": [
+        {
+          "id": "rowsToFields",
+          "options": {
+            "mappings": [
+              { "fieldName": "asset_id", "handlerKey": "fieldName" },
+              { "fieldName": "risk_score", "handlerKey": "fieldValue" }
+            ]
+          }
+        }
+      ],
       "targets": [
         {
           "datasource": { "type": "mssql", "uid": "industrial-ai-mssql" },
-          "rawSql": "SELECT asset_id AS metric, risk_score AS value FROM dbo.asset_risk_current ORDER BY asset_id",
+          "rawSql": "SELECT asset_id, risk_score FROM dbo.asset_risk_current WHERE asset_id IN (${asset_id:sqlstring}) ORDER BY asset_id",
           "format": "table",
           "refId": "A"
         }
@@ -54,13 +91,35 @@
       "title": "Risk Level by Asset",
       "type": "table",
       "datasource": { "type": "mssql", "uid": "industrial-ai-mssql" },
-      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 6 },
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
       "options": { "showHeader": true },
-      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "risk_score" },
+            "properties": [
+              { "id": "custom.displayMode", "value": "color-background" },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    { "color": "green", "value": null },
+                    { "color": "yellow", "value": 30 },
+                    { "color": "orange", "value": 70 },
+                    { "color": "red", "value": 90 }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
       "targets": [
         {
           "datasource": { "type": "mssql", "uid": "industrial-ai-mssql" },
-          "rawSql": "SELECT asset_id, risk_level, risk_score, failure_mode, top_drivers, as_of_minute_ts AS last_updated FROM dbo.asset_risk_current ORDER BY risk_score DESC",
+          "rawSql": "SELECT asset_id, risk_level, risk_score, failure_mode, top_drivers, as_of_minute_ts AS last_updated FROM dbo.asset_risk_current WHERE asset_id IN (${asset_id:sqlstring}) ORDER BY risk_score DESC",
           "format": "table",
           "refId": "A"
         }
@@ -71,7 +130,7 @@
       "title": "Avg Temperature (°C) per Asset per Minute",
       "type": "timeseries",
       "datasource": { "type": "mssql", "uid": "industrial-ai-mssql" },
-      "gridPos": { "x": 0, "y": 6, "w": 12, "h": 8 },
+      "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
       "options": { "tooltip": { "mode": "multi" } },
       "fieldConfig": {
         "defaults": {
@@ -91,7 +150,7 @@
       "targets": [
         {
           "datasource": { "type": "mssql", "uid": "industrial-ai-mssql" },
-          "rawSql": "SELECT minute_ts AS time, asset_id AS metric, avg_temp_c AS value FROM dbo.asset_minute_fact WHERE $__timeFilter(minute_ts) ORDER BY minute_ts",
+          "rawSql": "SELECT minute_ts AS time, asset_id AS metric, avg_temp_c AS value FROM dbo.asset_minute_fact WHERE $__timeFilter(minute_ts) AND asset_id IN (${asset_id:sqlstring}) ORDER BY minute_ts",
           "format": "time_series",
           "refId": "A"
         }
@@ -102,7 +161,7 @@
       "title": "Avg Vibration (mm/s) per Asset per Minute",
       "type": "timeseries",
       "datasource": { "type": "mssql", "uid": "industrial-ai-mssql" },
-      "gridPos": { "x": 12, "y": 6, "w": 12, "h": 8 },
+      "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
       "options": { "tooltip": { "mode": "multi" } },
       "fieldConfig": {
         "defaults": {
@@ -122,7 +181,7 @@
       "targets": [
         {
           "datasource": { "type": "mssql", "uid": "industrial-ai-mssql" },
-          "rawSql": "SELECT minute_ts AS time, asset_id AS metric, avg_vib_mm_s AS value FROM dbo.asset_minute_fact WHERE $__timeFilter(minute_ts) ORDER BY minute_ts",
+          "rawSql": "SELECT minute_ts AS time, asset_id AS metric, avg_vib_mm_s AS value FROM dbo.asset_minute_fact WHERE $__timeFilter(minute_ts) AND asset_id IN (${asset_id:sqlstring}) ORDER BY minute_ts",
           "format": "time_series",
           "refId": "A"
         }
@@ -133,7 +192,7 @@
       "title": "Risk Score Over Time",
       "type": "timeseries",
       "datasource": { "type": "mssql", "uid": "industrial-ai-mssql" },
-      "gridPos": { "x": 0, "y": 14, "w": 24, "h": 8 },
+      "gridPos": { "x": 0, "y": 16, "w": 24, "h": 8 },
       "options": { "tooltip": { "mode": "multi" } },
       "fieldConfig": {
         "defaults": {
@@ -155,7 +214,7 @@
       "targets": [
         {
           "datasource": { "type": "mssql", "uid": "industrial-ai-mssql" },
-          "rawSql": "SELECT minute_ts AS time, asset_id AS metric, risk_score AS value FROM dbo.asset_risk_minute WHERE $__timeFilter(minute_ts) ORDER BY minute_ts",
+          "rawSql": "SELECT minute_ts AS time, asset_id AS metric, risk_score AS value FROM dbo.asset_risk_minute WHERE $__timeFilter(minute_ts) AND asset_id IN (${asset_id:sqlstring}) ORDER BY minute_ts",
           "format": "time_series",
           "refId": "A"
         }
@@ -166,13 +225,34 @@
       "title": "Anomaly Events",
       "type": "table",
       "datasource": { "type": "mssql", "uid": "industrial-ai-mssql" },
-      "gridPos": { "x": 0, "y": 22, "w": 24, "h": 8 },
+      "gridPos": { "x": 0, "y": 24, "w": 24, "h": 8 },
       "options": { "showHeader": true },
-      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "severity" },
+            "properties": [
+              { "id": "custom.displayMode", "value": "color-background" },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    { "color": "yellow", "value": null },
+                    { "color": "orange", "value": 2 },
+                    { "color": "red", "value": 4 }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
       "targets": [
         {
           "datasource": { "type": "mssql", "uid": "industrial-ai-mssql" },
-          "rawSql": "SELECT TOP 50 asset_id, minute_ts, anomaly_type, signal, severity, score, reason FROM dbo.asset_anomaly_events WHERE $__timeFilter(minute_ts) ORDER BY minute_ts DESC",
+          "rawSql": "SELECT TOP 100 asset_id, minute_ts, anomaly_type, signal, severity, score, reason FROM dbo.asset_anomaly_events WHERE $__timeFilter(minute_ts) AND asset_id IN (${asset_id:sqlstring}) ORDER BY minute_ts DESC",
           "format": "table",
           "refId": "A"
         }

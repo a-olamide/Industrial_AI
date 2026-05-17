@@ -1,0 +1,6 @@
+asset_id,location,asset_category,manufacturer,install_year,rated_capacity_pct,maintenance_interval_days,criticality,criticality_weight
+COMP_001,Building-A,Compressor,Atlas Copco,2019,150,90,HIGH,1.25
+FAN_001,Building-B,Fan,Ebm-papst,2020,5000,180,MEDIUM,1.00
+GBX_001,Production-Floor,Gearbox,SEW-EURODRIVE,2018,75,60,HIGH,1.25
+PUMP_001,Utility-Room,Pump,Grundfos,2021,120,90,MEDIUM,1.00
+PUMP_002,Utility-Room,Pump,Grundfos,2022,120,180,LOW,0.80
