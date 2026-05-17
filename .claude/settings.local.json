@@ -5,7 +5,9 @@
       "PowerShell(Get-ChildItem -Path \"C:\\\\Projects\\\\IndustrailAI\" -Recurse -Directory | Select-Object -First 30 | ForEach-Object { $_.FullName })",
       "PowerShell(New-Item *)",
       "PowerShell(Get-ChildItem \"C:\\\\Projects\\\\IndustrailAI\\\\spark\" -Recurse | ForEach-Object { $_.FullName.Replace\\(\"C:\\\\Projects\\\\IndustrailAI\\\\\", \"\"\\) })",
-      "Bash(dotnet build *)"
+      "Bash(dotnet build *)",
+      "Bash(python3 *)",
+      "Bash(docker compose restart *)"
     ]
   }
 }

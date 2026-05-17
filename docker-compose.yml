@@ -160,6 +160,8 @@ services:
       - ./spark/checkpoints:/opt/spark/checkpoints
       - ./spark/submit.sh:/opt/spark/submit.sh:ro
       - ./spark/.ivy2:/home/spark/.ivy2
+      - ./spark/hive-warehouse:/opt/spark/hive-warehouse
+      - ./spark/metastore:/opt/spark/metastore
     entrypoint: ["/bin/bash", "/opt/spark/submit.sh"]
     restart: unless-stopped
 
