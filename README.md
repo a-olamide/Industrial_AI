@@ -130,26 +130,25 @@ A core architectural feature: enriching the streaming aggregates with a static r
 
 **How it works:**
 1. At Spark startup, the CSV is loaded as a broadcast static DataFrame and registered as a Spark SQL temp view `asset_profiles`
-2. Each analytics micro-batch is registered as a temp view `streaming_minute_batch`
-3. A Spark SQL `LEFT JOIN` enriches every streaming window:
+2. Each analytics micro-batch is joined to the static profiles using the **DataFrame API** (broadcast join):
 
-```sql
-SELECT
-    s.asset_id, s.minute_ts,
-    s.avg_temp_c, s.avg_vib_mm_s, s.avg_current_a, s.avg_flow_m3h, s.avg_pressure_bar,
-    s.event_count, s.fault_code_max,
-    COALESCE(p.location,                  'Unknown') AS location,
-    COALESCE(p.asset_category,            'Unknown') AS asset_category,
-    COALESCE(p.manufacturer,              'Unknown') AS manufacturer,
-    COALESCE(p.maintenance_interval_days, 90)        AS maintenance_interval_days,
-    COALESCE(p.criticality,               'MEDIUM')  AS criticality,
-    COALESCE(p.criticality_weight,        1.0)       AS criticality_weight
-FROM streaming_minute_batch s
-LEFT JOIN asset_profiles p ON s.asset_id = p.asset_id
+```python
+profiles_df = spark.table("asset_profiles")        # registered at startup
+enriched_df = batch_df.alias("s").join(
+    broadcast(profiles_df).alias("p"),
+    on="asset_id", how="left"
+).select(
+    col("s.asset_id"), col("s.minute_ts"), ...,
+    coalesce(col("p.location"),            lit("Unknown")).alias("location"),
+    coalesce(col("p.criticality_weight"),  lit(1.0)).alias("criticality_weight"),
+    ...
+)
 ```
 
-4. The `criticality_weight` adjusts risk scores: HIGH-criticality assets (COMP_001, GBX_001) score 25% higher for the same sensor readings — making them prioritised for maintenance
-5. The enriched result is persisted to `industrial.asset_enriched_minute` in Hive as Parquet
+> **Note:** The join uses the DataFrame API rather than `spark.sql(...)` because inside `foreachBatch`, `batch_df` and `SparkSession.getActiveSession()` are different session objects — a temp view registered on `batch_df`'s session is invisible to `spark.sql()`.
+
+3. The `criticality_weight` adjusts risk scores: HIGH-criticality assets (COMP_001, GBX_001) score 25% higher for the same sensor readings — making them prioritised for maintenance
+4. The enriched result is persisted to `industrial.asset_enriched_minute` in Hive as Parquet
 
 ---
 
@@ -290,11 +289,20 @@ docker exec -it industrial_sqlserver \
 
 ### Query Hive Parquet files with DuckDB (optional)
 
+The `demo_hive_query.py` script queries all Hive tables and prints a formatted report:
+
 ```bash
 python3 -m pip install duckdb
+python3 demo_hive_query.py
+```
+
+Or query a single table directly (note: use `*.parquet`, not `**/*.parquet` — DuckDB requires at least one subdirectory for the `**` glob, but Spark writes flat files without partition subdirectories):
+
+```bash
 python3 -c "
 import duckdb
-print(duckdb.query(\"SELECT asset_id, COUNT(*) AS rows FROM read_parquet('spark/hive-warehouse/industrial.db/asset_enriched_minute/**/*.parquet') GROUP BY 1\").df())
+con = duckdb.connect()
+print(con.query(\"SELECT asset_id, COUNT(*) AS rows FROM read_parquet('spark/hive-warehouse/industrial.db/asset_enriched_minute/*.parquet') GROUP BY 1\").fetchall())
 "
 ```
 

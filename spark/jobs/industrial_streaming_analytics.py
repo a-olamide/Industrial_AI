@@ -36,9 +36,9 @@ is logged and SQL Server writes continue uninterrupted.
 
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
-    col, from_json, to_timestamp,
+    col, coalesce, from_json, to_timestamp,
     avg, count, max as spark_max,
-    when, lit, window,
+    when, lit, window, broadcast,
 )
 from pyspark.sql.types import (
     StructType, StructField,
@@ -306,11 +306,11 @@ def write_raw_batch(batch_df, batch_id):
         "value", "quality", "kafka_offset", "kafka_partition",
     )
 
+    # Hive first — persistent storage layer
+    hive_write(raw_df, "telemetry_raw", batch_id)
+
     # SQL Server — operational log
     jdbc_write(raw_df, "dbo.telemetry_raw")
-
-    # Hive — persistent storage layer
-    hive_write(raw_df, "telemetry_raw", batch_id)
 
 
 # ── Stream 2 — 1-minute windowed analytics ────────────────────────────────────
@@ -486,6 +486,13 @@ def write_analytics_batch(batch_df, batch_id):
     if batch_df.isEmpty():
         return
 
+    try:
+        _write_analytics_batch_inner(batch_df, batch_id)
+    except Exception as exc:
+        log.error(f"[analytics] batch={batch_id} UNHANDLED: {exc}", exc_info=True)
+
+
+def _write_analytics_batch_inner(batch_df, batch_id):
     spark = SparkSession.getActiveSession()
     rows  = batch_df.collect()
     log.info(f"[analytics] batch={batch_id}  windows={len(rows)}")
@@ -497,42 +504,45 @@ def write_analytics_batch(batch_df, batch_id):
         "avg_current_a", "avg_flow_m3h",
         "event_count", "fault_code_max",
     )
+    # Hive first — a dup-key abort on SQL Server must not block the Hive path.
+    hive_write(fact_df, "asset_minute_fact", batch_id)
     try:
         jdbc_write(fact_df, "dbo.asset_minute_fact")
     except Exception as e:
         _suppress_dup(e, "asset_minute_fact", batch_id)
-    hive_write(fact_df, "asset_minute_fact", batch_id)
 
     # ── Spark SQL join: streaming batch ⋈ static asset profiles ──────────────
-    # Register this micro-batch as a temp view so it can be referenced in SQL.
-    # The asset_profiles view was registered once at startup from the CSV.
-    batch_df.createOrReplaceTempView("streaming_minute_batch")
-
-    enriched_df = spark.sql("""
-        SELECT
-            s.asset_id,
-            s.minute_ts,
-            s.avg_temp_c,
-            s.avg_vib_mm_s,
-            s.avg_current_a,
-            s.avg_flow_m3h,
-            s.avg_pressure_bar,
-            s.event_count,
-            s.fault_code_max,
-            COALESCE(p.location,                   'Unknown')  AS location,
-            COALESCE(p.asset_category,             'Unknown')  AS asset_category,
-            COALESCE(p.manufacturer,               'Unknown')  AS manufacturer,
-            COALESCE(p.install_year,               0)          AS install_year,
-            COALESCE(p.rated_capacity_pct,         100.0)      AS rated_capacity_pct,
-            COALESCE(p.maintenance_interval_days,  90)         AS maintenance_interval_days,
-            COALESCE(p.criticality,                'MEDIUM')   AS criticality,
-            COALESCE(p.criticality_weight,         1.0)        AS criticality_weight
-        FROM streaming_minute_batch s
-        LEFT JOIN asset_profiles p ON s.asset_id = p.asset_id
-    """)
-
-    hive_write(enriched_df, "asset_enriched_minute", batch_id)
-    log.info(f"[sql-join] batch={batch_id} enriched {enriched_df.count()} rows with asset profiles")
+    # Use the DataFrame API join so both sides share the same SparkSession.
+    # A temp view registered via batch_df.createOrReplaceTempView is invisible
+    # to SparkSession.getActiveSession().sql() because they are different session
+    # objects inside foreachBatch.
+    try:
+        profiles_df = spark.table("asset_profiles")
+        s = batch_df.alias("s")
+        p = broadcast(profiles_df).alias("p")
+        enriched_df = s.join(p, col("s.asset_id") == col("p.asset_id"), "left").select(
+            col("s.asset_id"),
+            col("s.minute_ts"),
+            col("s.avg_temp_c"),
+            col("s.avg_vib_mm_s"),
+            col("s.avg_current_a"),
+            col("s.avg_flow_m3h"),
+            col("s.avg_pressure_bar"),
+            col("s.event_count"),
+            col("s.fault_code_max"),
+            coalesce(col("p.location"),                   lit("Unknown")).alias("location"),
+            coalesce(col("p.asset_category"),             lit("Unknown")).alias("asset_category"),
+            coalesce(col("p.manufacturer"),               lit("Unknown")).alias("manufacturer"),
+            coalesce(col("p.install_year"),               lit(0)).alias("install_year"),
+            coalesce(col("p.rated_capacity_pct"),         lit(100.0)).alias("rated_capacity_pct"),
+            coalesce(col("p.maintenance_interval_days"),  lit(90)).alias("maintenance_interval_days"),
+            coalesce(col("p.criticality"),                lit("MEDIUM")).alias("criticality"),
+            coalesce(col("p.criticality_weight"),         lit(1.0)).alias("criticality_weight"),
+        )
+        hive_write(enriched_df, "asset_enriched_minute", batch_id)
+        log.info(f"[sql-join] batch={batch_id} enriched rows with asset profiles")
+    except Exception as exc:
+        log.error(f"[sql-join] batch={batch_id}: {exc}")
 
     # ── asset_minute_features ─────────────────────────────────────────────────
     feat_df = batch_df.select(
@@ -552,15 +562,13 @@ def write_analytics_batch(batch_df, batch_id):
         when(col("event_count") >= 5, True)
             .otherwise(False).alias("quality_gate_ok"),
     )
+    hive_write(feat_df, "asset_minute_features", batch_id)
     try:
         jdbc_write(feat_df, "dbo.asset_minute_features")
     except Exception as e:
         _suppress_dup(e, "asset_minute_features", batch_id)
-    hive_write(feat_df, "asset_minute_features", batch_id)
 
     # ── Anomaly detection + risk scoring ──────────────────────────────────────
-    # Pull criticality weights from the static profile view so risk scores
-    # reflect asset importance (HIGH-criticality assets score higher).
     try:
         weight_map = {
             r["asset_id"]: float(r["criticality_weight"])
@@ -575,24 +583,23 @@ def write_analytics_batch(batch_df, batch_id):
 
     if anomaly_rows:
         anom_df = spark.createDataFrame(anomaly_rows, ANOMALY_SCHEMA)
+        hive_write(anom_df, "asset_anomaly_events", batch_id)
         try:
             jdbc_write(anom_df, "dbo.asset_anomaly_events")
         except Exception as e:
             _suppress_dup(e, "asset_anomaly_events", batch_id)
-        hive_write(anom_df, "asset_anomaly_events", batch_id)
 
     if risk_rows:
         risk_df = spark.createDataFrame(risk_rows, RISK_SCHEMA).select(
             "asset_id", "minute_ts", "risk_score",
             "risk_level", "failure_mode", "top_drivers", "evidence_json",
         )
+        hive_write(risk_df, "asset_risk_minute", batch_id)
         try:
             jdbc_write(risk_df, "dbo.asset_risk_minute")
         except Exception as e:
             _suppress_dup(e, "asset_risk_minute", batch_id)
-        hive_write(risk_df, "asset_risk_minute", batch_id)
 
-        # SQL Server MERGE for the .NET dashboard (Hive has no MERGE equivalent)
         for r in risk_rows:
             _upsert_risk_current(spark, r)
 

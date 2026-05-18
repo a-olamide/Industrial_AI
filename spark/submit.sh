@@ -6,12 +6,14 @@ echo "[submit.sh] Preparing Spark Ivy cache..."
 mkdir -p /home/spark/.ivy2/cache
 mkdir -p /home/spark/.ivy2/jars
 
-echo "[submit.sh] Clearing stale Derby metastore locks and syncing Hive warehouse..."
-rm -f /opt/spark/metastore/derby-metastore/db.lck
-rm -f /opt/spark/metastore/derby-metastore/dbex.lck
-# Hive warehouse and metastore must stay in sync — wipe the managed db dir
-# so saveAsTable creates fresh tables rather than hitting LOCATION_ALREADY_EXISTS
+echo "[submit.sh] Resetting Hive warehouse, Derby metastore, and checkpoints..."
+# Wipe warehouse + metastore together (must stay in sync) and also wipe checkpoints.
+# Stale checkpoints cause batch replay that hits duplicate-key errors on SQL Server,
+# crashing the analytics query before Hive writes complete.
 rm -rf /opt/spark/hive-warehouse/industrial.db
+rm -rf /opt/spark/metastore/derby-metastore
+rm -rf /opt/spark/checkpoints/analytics
+rm -rf /opt/spark/checkpoints/raw
 
 echo "[submit.sh] Starting Spark streaming job..."
 

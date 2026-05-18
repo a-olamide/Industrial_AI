@@ -143,20 +143,31 @@ com.microsoft.sqlserver.jdbc.SQLServerException: Login failed for user 'sa'
 The sqlserver container may still be starting. Spark has `depends_on: service_healthy` so this
 should not happen in normal operation. If it does: `docker-compose restart spark`.
 
-### Reset checkpoints (reprocess from beginning)
+### Full reset (clean slate)
 
-Checkpoints store Kafka offsets and window state. To restart from scratch:
+`submit.sh` automatically wipes three things on every container restart so they stay in sync:
+
+| What | Why |
+|------|-----|
+| `spark/hive-warehouse/industrial.db/` | Prevents Hive `LOCATION_ALREADY_EXISTS` on `saveAsTable` |
+| `spark/metastore/derby-metastore/` | Metastore and warehouse must be wiped together — stale metastore entries pointing to deleted directories cause silent write failures |
+| `spark/checkpoints/raw` and `spark/checkpoints/analytics` | Stale checkpoints trigger SQL Server duplicate-key errors on replay, causing the analytics query to crash before Hive tables are written |
+
+This means **all Hive Parquet files are deleted on each Spark restart** — data is re-streamed from Kafka after the container comes back up.
+
+To trigger a manual reset, simply restart the container:
 ```bash
-docker-compose stop spark
-rm -rf spark/checkpoints/raw spark/checkpoints/analytics
-docker-compose start spark
+docker compose restart spark
 ```
-Set `startingOffsets: "earliest"` in the job temporarily to reprocess old messages.
+
+Spark starts fresh from the latest Kafka offset (`startingOffsets: "latest"`).
+To reprocess historical messages, temporarily change that to `"earliest"` in the job before restarting.
 
 ### Duplicate rows after Spark restart
 
-The job catches SQL Server error 2627/2601 (primary-key violations) and logs a warning instead
-of crashing. This is expected on checkpoint replay and is safe to ignore.
+No longer observed — stale checkpoints (the root cause) are wiped automatically by `submit.sh`.
+If you do see SQL Server error 2627/2601 in the logs, the job catches them and logs a warning
+rather than crashing.
 
 ### Apple Silicon (M1/M2/M3) notes
 

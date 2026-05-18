@@ -8,7 +8,9 @@
       "Bash(dotnet build *)",
       "Bash(python3 *)",
       "Bash(docker compose restart *)",
-      "Bash(docker volume *)"
+      "Bash(docker volume *)",
+      "Bash(docker restart industrial_spark *)",
+      "Bash(grep -v \"^--$\")"
     ]
   }
 }
