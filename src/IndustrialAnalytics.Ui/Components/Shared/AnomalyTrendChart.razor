@@ -1,0 +1,112 @@
+@using IndustrialAnalytics.Contracts.Dtos
+
+@if (Items is null || Items.Count == 0)
+{
+    <div class="text-muted small p-2" style="border:1px solid #e5e7eb; border-radius:8px;">No anomalies in this range.</div>
+}
+else
+{
+    <svg width="@Width" height="@Height"
+         viewBox="0 0 @Width @Height"
+         style="border:1px solid #e5e7eb; border-radius:8px; background:white; display:block; width:100%;">
+
+        @* All SVG text and labeled elements rendered as MarkupString to avoid Razor <text> conflict *@
+        @((MarkupString)_svgBody)
+
+        @* Anomaly spikes + dots (safe Razor elements) *@
+        @foreach (var (item, x) in _plotItems)
+        {
+            var y = SeverityToY(item.Severity);
+            var col = SignalColor(item.Signal);
+            <line x1="@x" y1="@y" x2="@x" y2="@_chartBottom"
+                  stroke="@col" stroke-width="2" opacity="0.5" />
+            <circle cx="@x" cy="@y" r="5" fill="@col" opacity="0.9">
+                <title>@($"{item.MinuteTs:HH:mm} · {item.Signal} · {item.AnomalyType} · sev={item.Severity} · score={item.Score:F2}\n{item.Reason}")</title>
+            </circle>
+        }
+    </svg>
+}
+
+@code {
+    [Parameter] public IReadOnlyList<AnomalyDto>? Items { get; set; }
+    [Parameter] public int Width  { get; set; } = 900;
+    [Parameter] public int Height { get; set; } = 160;
+
+    private const int PadL      = 28;
+    private const int PadR      = 8;
+    private const int PadTop    = 26;
+    private const int PadBottom = 18;
+
+    private int _chartBottom => Height - PadBottom;
+    private int _chartHeight => _chartBottom - PadTop;
+
+    private string _svgBody = "";
+    private List<(AnomalyDto item, double x)> _plotItems = new();
+
+    protected override void OnParametersSet() => Build();
+
+    private void Build()
+    {
+        _plotItems.Clear();
+        var sb = new System.Text.StringBuilder();
+
+        if (Items is null || Items.Count == 0) { _svgBody = ""; return; }
+
+        var minTs = Items.Min(a => a.MinuteTs);
+        var maxTs = Items.Max(a => a.MinuteTs);
+        var span  = Math.Max(60, (maxTs - minTs).TotalSeconds);
+        double chartWidth = Width - PadL - PadR;
+
+        // grid + y-axis severity labels
+        for (int s = 1; s <= 5; s++)
+        {
+            var y = SeverityToY(s);
+            sb.Append($"<line x1='{PadL}' y1='{y:F1}' x2='{Width - PadR}' y2='{y:F1}' stroke='#f3f4f6' stroke-width='1'/>");
+            sb.Append($"<text x='{PadL - 4}' y='{y + 4:F1}' font-size='10' fill='#9ca3af' text-anchor='end'>{s}</text>");
+        }
+
+        // build plot items
+        foreach (var item in Items.OrderBy(a => a.MinuteTs))
+        {
+            var x = PadL + ((item.MinuteTs - minTs).TotalSeconds / span) * chartWidth;
+            _plotItems.Add((item, x));
+        }
+
+        // x-axis time labels (up to 6)
+        int labelCount = Math.Min(6, _plotItems.Count);
+        for (int i = 0; i < labelCount; i++)
+        {
+            var t = minTs + TimeSpan.FromSeconds(span * i / Math.Max(1, labelCount - 1));
+            var x = PadL + (i / (double)Math.Max(1, labelCount - 1)) * chartWidth;
+            sb.Append($"<text x='{x:F1}' y='{Height - 2}' font-size='9' fill='#9ca3af' text-anchor='middle'>{t:HH:mm}</text>");
+        }
+
+        // legend
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        int lx = PadL;
+        foreach (var item in Items)
+        {
+            if (!seen.Add(item.Signal)) continue;
+            var col = SignalColor(item.Signal);
+            sb.Append($"<circle cx='{lx + 5}' cy='13' r='5' fill='{col}'/>");
+            sb.Append($"<text x='{lx + 14}' y='17' font-size='10' fill='#374151'>{System.Web.HttpUtility.HtmlEncode(item.Signal)}</text>");
+            lx += 16 + item.Signal.Length * 7;
+        }
+
+        _svgBody = sb.ToString();
+    }
+
+    private double SeverityToY(int severity) =>
+        PadTop + (5 - severity) / 4.0 * _chartHeight;
+
+    private static string SignalColor(string signal) =>
+        (signal ?? "").ToUpperInvariant() switch
+        {
+            var s when s.Contains("TEMP")  => "#f97316",
+            var s when s.Contains("VIB")   => "#3b82f6",
+            var s when s.Contains("PRESS") => "#8b5cf6",
+            var s when s.Contains("CURR")  => "#10b981",
+            var s when s.Contains("POWER") => "#eab308",
+            _                              => "#6b7280",
+        };
+}

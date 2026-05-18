@@ -1,5 +1,6 @@
 ﻿@page "/assets/{AssetId}"
 @using IndustrialAnalytics.Contracts.Insights
+@using IndustrialAnalytics.Contracts.Dtos
 @using IndustrialAnalytics.Ui.Components.Shared
 @inject IndustrialAnalytics.Ui.Services.InsightsApiClient Api
 
@@ -125,6 +126,43 @@ else
             <RiskBadge Score="@_risk.Last().Score" />
         </div>
     }
+    <h4 class="mt-4">Anomaly trend</h4>
+    @if (_anomalies is null || _anomalies.Count == 0)
+    {
+        <p class="text-muted">No anomalies in this range.</p>
+    }
+    else
+    {
+        <div class="mb-1 small text-muted">@_anomalies.Count anomaly event(s) — hover a dot for details</div>
+        <AnomalyTrendChart Items="_anomalies" Width="900" Height="160" />
+
+        <table class="table table-sm mt-3">
+            <thead>
+                <tr>
+                    <th>Time (UTC)</th>
+                    <th>Signal</th>
+                    <th>Type</th>
+                    <th>Sev</th>
+                    <th>Score</th>
+                    <th>Reason</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var a in _anomalies.OrderByDescending(x => x.MinuteTs))
+                {
+                    <tr>
+                        <td>@a.MinuteTs.ToString("HH:mm")</td>
+                        <td>@a.Signal</td>
+                        <td>@a.AnomalyType</td>
+                        <td><span class="badge @SeverityBadgeClass(a.Severity)">@a.Severity</span></td>
+                        <td>@a.Score.ToString("F2")</td>
+                        <td class="text-muted small">@a.Reason</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+
     <h4>Risk points</h4>
     @if (_risk is null || _risk.Count == 0)
     {
@@ -203,15 +241,15 @@ else
     private CancellationTokenSource? _insightCts;
     private long _insightRunId;
 
-    // ---- existing fields you already have ----
     private List<DateTime> _anomalyTimes = new();
+    private List<AnomalyDto> _anomalies = new();
     [Parameter] public string AssetId { get; set; } = "";
     private bool _loading = true;
     private IndustrialAnalytics.Contracts.Assets.AssetSummaryDto? _summary;
     private List<IndustrialAnalytics.Contracts.Risk.RiskPointDto>? _risk;
     private IndustrialAnalytics.Contracts.Assets.AssetRecommendationsResponseDto? _recs;
-    private DateTime? _from = new DateTime(2025, 1, 1, 12, 0, 0, DateTimeKind.Utc);
-    private DateTime? _to = new DateTime(2025, 1, 1, 18, 0, 0, DateTimeKind.Utc);
+    private DateTime? _from = DateTime.UtcNow.Date;
+    private DateTime? _to = DateTime.UtcNow;
     private const string UserName = "blazor-ui";
 
     protected override async Task OnParametersSetAsync()
@@ -315,7 +353,8 @@ else
         _recs = await Api.GetRecommendationsAsync(AssetId, status: "OPEN", take: 50);
 
         var anomaliesResp = await Api.GetAnomaliesAsync(AssetId, fromUtc, toUtc);
-        _anomalyTimes = anomaliesResp?.Items.Select(a => a.MinuteTs).ToList() ?? new();
+        _anomalies = anomaliesResp?.Items.ToList() ?? new();
+        _anomalyTimes = _anomalies.Select(a => a.MinuteTs).ToList();
 
         _loading = false;
     }
@@ -352,12 +391,20 @@ else
         await Reload();
     }
     private static string RiskBadgeClass(string? level) =>
-    (level ?? "").ToUpperInvariant() switch
-    {
-        "LOW" => "badge bg-success",
-        "MED" or "MEDIUM" => "badge bg-warning text-dark",
-        "HIGH" => "badge bg-danger",
-        _ => "badge bg-secondary"
-    };
+        (level ?? "").ToUpperInvariant() switch
+        {
+            "LOW" => "badge bg-success",
+            "MED" or "MEDIUM" => "badge bg-warning text-dark",
+            "HIGH" => "badge bg-danger",
+            _ => "badge bg-secondary"
+        };
+
+    private static string SeverityBadgeClass(int sev) =>
+        sev switch
+        {
+            >= 4 => "badge bg-danger",
+            3    => "badge bg-warning text-dark",
+            _    => "badge bg-secondary"
+        };
 
 }
