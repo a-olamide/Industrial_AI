@@ -150,12 +150,124 @@ strongly correlated. Random per-row splitting would place adjacent
 windows on both sides of the train/test boundary and produce
 optimistic-but-invalid accuracy numbers.
 
-Instead, we partition **by `recording_id`** using
-`sklearn.model_selection.GroupShuffleSplit`. Every window from a given
-recording lands in exactly one split. Final split ratios (70/15/15,
-60/20/20, ...) will be tuned once all 16 recordings are downloaded and
-the class-by-load matrix is visible, because stratifying 16 groups
-across four classes and four load levels is a hard constraint.
+For this initial 16-recording baseline we use an **explicit
+recording-and-load-aware split** rather than random group shuffling:
+
+| split      | motor loads | recordings | recordings/class |
+|------------|-------------|-----------|-------------------|
+| train      | 0 HP, 1 HP  | 8         | 2                 |
+| validation | 2 HP        | 4         | 1                 |
+| test       | 3 HP        | 4         | 1                 |
+
+That is a **50 / 25 / 25 recording-level split**, not 70/15/15. It is
+selected because only four independent operating-load recordings exist
+per fault class at this milestone; two loads for train and one load
+each for validation and test is the finest recording-level partition
+that keeps every fault class in every split without leaking windows
+between splits. `ml/src/split_dataset.py::load_aware_split` asserts
+both properties at run time.
+
+The generic `group_train_val_test_split` helper (`GroupShuffleSplit`
+under the hood) remains available for future experiments that add
+additional fault diameters (0.014", 0.021"), the other outer-race
+positions (3 o'clock, 12 o'clock), and the fan-end fault set — at
+which point broader group-aware cross-validation becomes feasible.
+
+## Running the baseline end-to-end
+
+Once the 16 `.mat` files are in `ml/data/raw/cwru/`:
+
+```bash
+source .venv/bin/activate
+python -m ml.src.run_experiment
+```
+
+That single command produces:
+
+- `ml/data/processed/cwru_features.csv` (gitignored)
+- `ml/models/rf_baseline_cwru.joblib` + `.json` metadata (gitignored)
+- All figures under `ml/reports/figures/` (committed)
+
+## Current Experimental Status
+
+Numbers below are the actual measured output from
+`python -m ml.src.run_experiment` on the 16-recording CWRU set with
+the 50/25/25 load-aware split described above. They are regenerated
+whenever the script runs; nothing here is hard-coded.
+
+**Dataset**
+- 16 recordings loaded (4 classes × 4 motor loads).
+- Total 2048-sample non-overlapping windows: **1,537**.
+- Windows per class: NORMAL 828, INNER_RACE 237, BALL 236, OUTER_RACE 236.
+  Class imbalance is a consequence of Normal recordings being ~4×
+  longer (48 kHz for ~19 s) than the fault recordings (12 kHz for
+  ~10 s); `class_weight="balanced"` compensates during training.
+
+**Validation (motor load = 2 HP, 413 windows across 4 recordings)**
+- accuracy = 1.0000, macro-precision = 1.0000, macro-recall = 1.0000, macro-F1 = 1.0000.
+- Confusion matrix: perfectly diagonal, 236/59/59/59 per class.
+
+**Test (motor load = 3 HP, 415 windows across 4 recordings)**
+- accuracy = 1.0000, macro-precision = 1.0000, macro-recall = 1.0000, macro-F1 = 1.0000.
+- Confusion matrix: perfectly diagonal, 237/60/59/59 per class.
+
+**Random Forest feature importance (mean decrease in Gini impurity)**
+1. `vibration_std` ~ 0.234
+2. `vibration_peak` ~ 0.227
+3. `vibration_rms` ~ 0.212
+4. `vibration_peak_to_peak` ~ 0.178
+5. `vibration_kurtosis` ~ 0.105
+6. `crest_factor` ~ 0.023
+7. `vibration_skewness` ~ 0.020
+8. `rotational_speed_rpm` ~ 0.003
+9. `motor_load_hp` ~ 4e-16 (effectively unused, as expected — this
+   feature is constant *within* every recording, so the forest cannot
+   use it to separate classes)
+
+**Caveats / interpretation**
+
+- 100% is real for this split but should NOT be presented as a
+  production quality signal. The 0.007" fault severity produces
+  dramatically different vibration amplitudes across the four classes
+  (RMS ranges: NORMAL 0.06–0.08, BALL 0.13–0.16, INNER_RACE 0.28–0.33,
+  OUTER_RACE 0.54–0.71). At this severity the classes are trivially
+  separable by any single amplitude statistic; the RF is not doing
+  much heavy lifting. Adding 0.014" and 0.021" fault severities and/or
+  additional outer-race positions will make the task materially
+  harder.
+- Feature importance does not imply causality. It only reports which
+  features the trees split on.
+- The `Normal_2.mat` download from CWRU contains **both** `X098_*`
+  and `X099_*` variables; `ml/src/cwru_loader.py` uses the
+  `experiment_number` field on each `RecordingSpec` to pick the
+  correct series (`X099_DE_time` for Normal_2 at 2 HP). Without this
+  disambiguation, Normal_2 silently duplicates Normal_1's signal.
+- Sampling-rate is NOT stored in the `.mat` files. The Normal set is
+  published at 48 kHz while the 0.007" fault set (12 kHz Drive End)
+  is at 12 kHz. Every `RecordingSpec` records the vendor sampling
+  rate; the current time-domain baseline does not consume it, but any
+  future frequency-domain feature must respect it.
+
+## Bridge to the online pipeline
+
+```
+CWRU .mat        --------- offline ---------->  trained rf_baseline_cwru.joblib
+    ^                                                  |
+    |                                                  v
+    +----- same MachineFeatureVector contract ---------+
+    |                                                  |
+Kafka simulator ---------> Spark Structured Streaming -+---> live prediction
+                          (equivalent 2048-sample                     |
+                           time-domain feature engineering)           v
+                                                              SQL Server + UI
+                                                                      |
+                                                                      v
+                                                            Claude API narration
+```
+
+The offline model is portable to the online pipeline **iff** the
+Spark job emits rows that match `FEATURE_COLUMNS` in
+`ml/src/train_baseline.py`. That is the contract.
 
 ## Non-goals for this branch
 

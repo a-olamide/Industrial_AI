@@ -21,7 +21,7 @@ faults — the fault position relative to the load zone.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
@@ -45,9 +45,19 @@ DEFAULT_ASSET_ID = "cwru_bearing_12kDE"
 class RecordingSpec:
     """Vendor-documented metadata for one CWRU experiment.
 
+    ``experiment_number`` is the numeric CWRU experiment id
+    (e.g. Normal at 2 HP is experiment 99). Because some downloads
+    bundle multiple experiments in one ``.mat`` file, the loader uses
+    this hint to select the correct ``X{nnn}_*`` variables.
+
     ``candidate_filenames`` lists the plausible on-disk names for the
     same experiment. The user drops the downloaded ``.mat`` files into
     ``ml/data/raw/cwru/`` and the loader searches this list in order.
+
+    ``sampling_rate_hz`` documents the vendor's published sampling rate
+    for the recording. It is NOT stored inside the ``.mat`` file and
+    the current time-domain baseline does not consume it, but it must
+    be honored before any frequency-domain feature is added.
     """
 
     recording_id: str
@@ -56,6 +66,8 @@ class RecordingSpec:
     approx_rpm: int
     fault_diameter_in: float | None
     outer_race_position: str | None
+    experiment_number: int
+    sampling_rate_hz: int
     candidate_filenames: tuple[str, ...]
 
 
@@ -63,23 +75,25 @@ class RecordingSpec:
 # See: https://engineering.case.edu/bearingdatacenter — 12 kHz Drive End,
 # fault size 0.007", outer race centered at 6 o'clock. Numeric filenames
 # below match CWRU's original download URLs (e.g. 097.mat for Normal_0).
+# Normal recordings are published at 48 kHz; the 0.007" fault recordings
+# on the 12 kHz Drive End set are at 12 kHz.
 CWRU_RECORDINGS: tuple[RecordingSpec, ...] = (
-    RecordingSpec("Normal_0", "NORMAL", 0, 1797, None, None, ("Normal_0.mat", "97.mat", "097.mat")),
-    RecordingSpec("Normal_1", "NORMAL", 1, 1772, None, None, ("Normal_1.mat", "98.mat", "098.mat")),
-    RecordingSpec("Normal_2", "NORMAL", 2, 1750, None, None, ("Normal_2.mat", "99.mat", "099.mat")),
-    RecordingSpec("Normal_3", "NORMAL", 3, 1730, None, None, ("Normal_3.mat", "100.mat")),
-    RecordingSpec("IR007_0", "INNER_RACE", 0, 1797, 0.007, None, ("IR007_0.mat", "105.mat")),
-    RecordingSpec("IR007_1", "INNER_RACE", 1, 1772, 0.007, None, ("IR007_1.mat", "106.mat")),
-    RecordingSpec("IR007_2", "INNER_RACE", 2, 1750, 0.007, None, ("IR007_2.mat", "107.mat")),
-    RecordingSpec("IR007_3", "INNER_RACE", 3, 1730, 0.007, None, ("IR007_3.mat", "108.mat")),
-    RecordingSpec("B007_0", "BALL", 0, 1797, 0.007, None, ("B007_0.mat", "118.mat")),
-    RecordingSpec("B007_1", "BALL", 1, 1772, 0.007, None, ("B007_1.mat", "119.mat")),
-    RecordingSpec("B007_2", "BALL", 2, 1750, 0.007, None, ("B007_2.mat", "120.mat")),
-    RecordingSpec("B007_3", "BALL", 3, 1730, 0.007, None, ("B007_3.mat", "121.mat")),
-    RecordingSpec("OR007@6_0", "OUTER_RACE", 0, 1797, 0.007, "6_oclock", ("OR007@6_0.mat", "130.mat")),
-    RecordingSpec("OR007@6_1", "OUTER_RACE", 1, 1772, 0.007, "6_oclock", ("OR007@6_1.mat", "131.mat")),
-    RecordingSpec("OR007@6_2", "OUTER_RACE", 2, 1750, 0.007, "6_oclock", ("OR007@6_2.mat", "132.mat")),
-    RecordingSpec("OR007@6_3", "OUTER_RACE", 3, 1730, 0.007, "6_oclock", ("OR007@6_3.mat", "133.mat")),
+    RecordingSpec("Normal_0",  "NORMAL",     0, 1797, None,  None,       97, 48000, ("Normal_0.mat", "97.mat", "097.mat")),
+    RecordingSpec("Normal_1",  "NORMAL",     1, 1772, None,  None,       98, 48000, ("Normal_1.mat", "98.mat", "098.mat")),
+    RecordingSpec("Normal_2",  "NORMAL",     2, 1750, None,  None,       99, 48000, ("Normal_2.mat", "99.mat", "099.mat")),
+    RecordingSpec("Normal_3",  "NORMAL",     3, 1730, None,  None,      100, 48000, ("Normal_3.mat", "100.mat")),
+    RecordingSpec("IR007_0",   "INNER_RACE", 0, 1797, 0.007, None,      105, 12000, ("IR007_0.mat", "105.mat")),
+    RecordingSpec("IR007_1",   "INNER_RACE", 1, 1772, 0.007, None,      106, 12000, ("IR007_1.mat", "106.mat")),
+    RecordingSpec("IR007_2",   "INNER_RACE", 2, 1750, 0.007, None,      107, 12000, ("IR007_2.mat", "107.mat")),
+    RecordingSpec("IR007_3",   "INNER_RACE", 3, 1730, 0.007, None,      108, 12000, ("IR007_3.mat", "108.mat")),
+    RecordingSpec("B007_0",    "BALL",       0, 1797, 0.007, None,      118, 12000, ("B007_0.mat", "118.mat")),
+    RecordingSpec("B007_1",    "BALL",       1, 1772, 0.007, None,      119, 12000, ("B007_1.mat", "119.mat")),
+    RecordingSpec("B007_2",    "BALL",       2, 1750, 0.007, None,      120, 12000, ("B007_2.mat", "120.mat")),
+    RecordingSpec("B007_3",    "BALL",       3, 1730, 0.007, None,      121, 12000, ("B007_3.mat", "121.mat")),
+    RecordingSpec("OR007@6_0", "OUTER_RACE", 0, 1797, 0.007, "6_oclock", 130, 12000, ("OR007@6_0.mat", "130.mat")),
+    RecordingSpec("OR007@6_1", "OUTER_RACE", 1, 1772, 0.007, "6_oclock", 131, 12000, ("OR007@6_1.mat", "131.mat")),
+    RecordingSpec("OR007@6_2", "OUTER_RACE", 2, 1750, 0.007, "6_oclock", 132, 12000, ("OR007@6_2.mat", "132.mat")),
+    RecordingSpec("OR007@6_3", "OUTER_RACE", 3, 1730, 0.007, "6_oclock", 133, 12000, ("OR007@6_3.mat", "133.mat")),
 )
 
 
@@ -158,7 +172,10 @@ def build_feature_frame(
     resolutions, _missing = resolve_recording_paths(raw_dir)
     rows: list[dict[str, object]] = []
     for resolution in resolutions:
-        recording = load_recording(resolution.path)
+        recording = load_recording(
+            resolution.path,
+            expected_experiment_number=resolution.spec.experiment_number,
+        )
         window_features = extract_features(
             recording.drive_end_signal,
             window_size=window_size,

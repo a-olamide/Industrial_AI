@@ -16,6 +16,7 @@ counts are known.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Iterable
 
 import pandas as pd
 from sklearn.model_selection import GroupShuffleSplit
@@ -23,6 +24,7 @@ from sklearn.model_selection import GroupShuffleSplit
 
 GROUP_COLUMN = "recording_id"
 LABEL_COLUMN = "fault_class"
+LOAD_COLUMN = "motor_load_hp"
 
 
 @dataclass(frozen=True)
@@ -94,10 +96,66 @@ def summarize_split(split: SplitFrames, label_column: str = LABEL_COLUMN) -> pd.
     return pd.DataFrame(rows).fillna(0)
 
 
+def load_aware_split(
+    frame: pd.DataFrame,
+    train_loads: Iterable[float],
+    validation_loads: Iterable[float],
+    test_loads: Iterable[float],
+    load_column: str = LOAD_COLUMN,
+    group_column: str = GROUP_COLUMN,
+    label_column: str = LABEL_COLUMN,
+) -> SplitFrames:
+    """Partition rows by explicit motor-load values.
+
+    Every recording belongs to exactly one motor-load level, so slicing
+    by ``motor_load_hp`` is equivalent to grouping by ``recording_id``.
+    This function additionally asserts that:
+
+    - the three load sets are disjoint and non-empty
+    - no ``recording_id`` appears in more than one split
+    - every fault class present in the input appears in each split
+    """
+    train_set = {float(v) for v in train_loads}
+    val_set = {float(v) for v in validation_loads}
+    test_set = {float(v) for v in test_loads}
+    if not train_set or not val_set or not test_set:
+        raise ValueError("train/validation/test load sets must each be non-empty")
+    overlap = (train_set & val_set) | (train_set & test_set) | (val_set & test_set)
+    if overlap:
+        raise ValueError(f"load values must be disjoint across splits; overlap={sorted(overlap)}")
+
+    for col in (load_column, group_column, label_column):
+        if col not in frame.columns:
+            raise KeyError(f"missing required column {col!r}")
+
+    loads = frame[load_column].astype(float)
+    train_df = frame[loads.isin(train_set)].reset_index(drop=True)
+    val_df = frame[loads.isin(val_set)].reset_index(drop=True)
+    test_df = frame[loads.isin(test_set)].reset_index(drop=True)
+
+    train_groups = set(train_df[group_column].unique())
+    val_groups = set(val_df[group_column].unique())
+    test_groups = set(test_df[group_column].unique())
+    group_overlap = (
+        (train_groups & val_groups) | (train_groups & test_groups) | (val_groups & test_groups)
+    )
+    assert not group_overlap, f"recording_id leaked across splits: {sorted(group_overlap)}"
+
+    all_classes = set(frame[label_column].unique())
+    for name, df in (("train", train_df), ("validation", val_df), ("test", test_df)):
+        classes_in_split = set(df[label_column].unique())
+        missing = all_classes - classes_in_split
+        assert not missing, f"split {name!r} is missing classes: {sorted(missing)}"
+
+    return SplitFrames(train=train_df, validation=val_df, test=test_df)
+
+
 __all__ = [
     "GROUP_COLUMN",
     "LABEL_COLUMN",
+    "LOAD_COLUMN",
     "SplitFrames",
     "group_train_val_test_split",
+    "load_aware_split",
     "summarize_split",
 ]

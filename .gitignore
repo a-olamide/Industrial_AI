@@ -37,10 +37,11 @@ ml/data/processed/*.parquet
 ml/data/processed/*.npy
 ml/data/processed/*.npz
 
-# Trained model artifacts
+# Trained model artifacts + per-run experiment metadata
 ml/models/*.pkl
 ml/models/*.joblib
 ml/models/*.onnx
+ml/models/*.json
 
 # Scientific raw signal files (e.g. CWRU MATLAB recordings)
 *.mat

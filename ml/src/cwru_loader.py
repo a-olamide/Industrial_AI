@@ -70,10 +70,18 @@ def _user_keys(mat: dict[str, Any]) -> list[str]:
     return [k for k in mat.keys() if not k.startswith("__")]
 
 
-def _find_suffixed(keys: list[str], suffix: str) -> str | None:
+def _find_suffixed(
+    keys: list[str],
+    suffix: str,
+    preferred_prefix: str | None = None,
+) -> str | None:
     matches = [k for k in keys if k.endswith(suffix)]
     if not matches:
         return None
+    if preferred_prefix is not None:
+        for k in matches:
+            if k.startswith(preferred_prefix):
+                return k
     if len(matches) > 1:
         matches.sort()
     return matches[0]
@@ -103,13 +111,23 @@ def _scalar_rpm(raw: Any, key: str) -> float:
     return value
 
 
-def load_recording(mat_path: str | Path) -> CwruRecording:
+def load_recording(
+    mat_path: str | Path,
+    expected_experiment_number: int | None = None,
+) -> CwruRecording:
     """Load a single CWRU ``.mat`` file.
 
     Parameters
     ----------
     mat_path:
         Path to the ``.mat`` file on disk.
+    expected_experiment_number:
+        Optional hint for the numeric CWRU experiment (e.g. ``99``).
+        Some CWRU downloads bundle two experiments in one file (e.g.
+        ``99.mat`` also contains ``X098_*`` variables). When provided,
+        the loader prefers variables whose key starts with
+        ``f"X{n:03d}_"`` or ``f"X{n:03d}"``. Falls back to alphabetical
+        selection when no hint is given or no matching key exists.
 
     Raises
     ------
@@ -128,7 +146,12 @@ def load_recording(mat_path: str | Path) -> CwruRecording:
     if not keys:
         raise CwruLoaderError(f"{path.name} contains no user variables")
 
-    de_key = _find_suffixed(keys, DRIVE_END_SUFFIX)
+    if expected_experiment_number is not None:
+        prefix_padded = f"X{int(expected_experiment_number):03d}"
+    else:
+        prefix_padded = None
+
+    de_key = _find_suffixed(keys, DRIVE_END_SUFFIX, preferred_prefix=prefix_padded)
     if de_key is None:
         raise CwruLoaderError(
             f"{path.name} has no drive-end variable (expected a key ending in {DRIVE_END_SUFFIX!r}). "
@@ -136,10 +159,12 @@ def load_recording(mat_path: str | Path) -> CwruRecording:
         )
     de_signal = _flatten_signal(mat[de_key], de_key)
 
-    fe_key = _find_suffixed(keys, FAN_END_SUFFIX)
+    fe_key = _find_suffixed(keys, FAN_END_SUFFIX, preferred_prefix=prefix_padded)
     fe_signal = _flatten_signal(mat[fe_key], fe_key) if fe_key else None
 
-    rpm_key = _find_suffixed(keys, RPM_SUFFIX)
+    # RPM variables follow the pattern XnnnRPM (no underscore before "RPM"),
+    # so the same experiment prefix filter applies.
+    rpm_key = _find_suffixed(keys, RPM_SUFFIX, preferred_prefix=prefix_padded)
     rpm_value = _scalar_rpm(mat[rpm_key], rpm_key) if rpm_key else None
 
     return CwruRecording(
