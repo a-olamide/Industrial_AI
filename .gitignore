@@ -12,3 +12,38 @@ obj/
 # Others
 *.log
 *.tmp
+
+# macOS
+.DS_Store
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+
+# ML raw data (never commit vendor datasets; keep only .gitkeep markers).
+# Subdirectories are re-included so the "!.gitkeep" exception can reach them;
+# their contents are still ignored by the ml/data/raw/** rule.
+ml/data/raw/**
+!ml/data/raw/
+!ml/data/raw/*/
+!ml/data/raw/**/.gitkeep
+
+# Processed ML datasets (regeneratable from raw + code)
+ml/data/processed/*.csv
+ml/data/processed/*.parquet
+ml/data/processed/*.npy
+ml/data/processed/*.npz
+
+# Trained model artifacts
+ml/models/*.pkl
+ml/models/*.joblib
+ml/models/*.onnx
+
+# Scientific raw signal files (e.g. CWRU MATLAB recordings)
+*.mat
+
+# Generated columnar data (does not untrack files already committed)
+*.parquet
