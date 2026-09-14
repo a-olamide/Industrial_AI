@@ -43,6 +43,7 @@ from sklearn.metrics import (
 
 from .cwru_loader import inspect_mat, load_recording
 from .dataset_builder import (
+    BASELINE_SPECS,
     DEFAULT_ASSET_ID,
     SOURCE_TAG,
     RecordingSpec,
@@ -95,7 +96,10 @@ class FileInspection:
 
 def inspect_all_files() -> list[FileInspection]:
     _hr("STEP 1 - FILE INSPECTION")
-    resolutions, missing = resolve_recording_paths(RAW_DIR)
+    # Baseline (Experiment 1) is frozen to NORMAL + 0.007" recordings.
+    # Additional severities from CWRU_RECORDINGS are handled by
+    # audit_expanded_dataset.py so the baseline stays reproducible.
+    resolutions, missing = resolve_recording_paths(RAW_DIR, BASELINE_SPECS)
     if missing:
         raise SystemExit(f"missing recordings: {[m.recording_id for m in missing]}")
 
