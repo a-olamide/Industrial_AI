@@ -33,7 +33,11 @@ ml/
 │   ├── dataset_builder.py    <- CWRU metadata + canonical feature frame
 │   ├── split_dataset.py      <- group-aware train/val/test split
 │   ├── train_baseline.py     <- Random Forest baseline
-│   └── evaluate.py           <- classification report + confusion matrix
+│   ├── evaluate.py           <- classification report + confusion matrix
+│   ├── run_experiment.py     <- Experiment 1 (FROZEN 0.007" baseline)
+│   ├── audit_expanded_dataset.py  <- 40-recording dataset audit
+│   └── experiment2_multiseverity.py <- Experiment 2 (multi-severity)
+├── tests/                    <- stdlib unittest contract checks
 ├── models/                   <- trained artifacts (gitignored)
 └── reports/figures/          <- generated plots
 ```
@@ -218,7 +222,207 @@ prefix under `ml/reports/figures/`. It does **not** split, train,
 or persist any model - Experiment 2 will be designed after reviewing
 the audit output.
 
-## Current Experimental Status
+## Experiment 2 - multi-severity fault classification
+
+**Research question:** can a supervised classifier trained across
+*multiple* bearing-fault severities (0.007", 0.014", 0.021")
+generalize to an unseen motor load?
+
+```bash
+python -m ml.src.experiment2_multiseverity
+```
+
+Experiment 1 is frozen and is NOT re-run, re-fit or overwritten by
+this command. Experiment 2 writes only `experiment2_*` figures and the
+`rf_multiseverity_cwru.*` artifact pair.
+
+### Split design
+
+Strictly by complete recording / motor load - never by random rows:
+
+| split      | motor load | recordings | windows | severities present |
+|------------|-----------|------------|---------|--------------------|
+| train      | 0 + 1 HP  | 20         | 1,417   | 0.007, 0.014, 0.021 |
+| validation | 2 HP      | 10         | 767     | 0.007, 0.014, 0.021 |
+| test       | 3 HP      | 10         | 769     | 0.007, 0.014, 0.021 |
+
+`ml/src/split_dataset.py::multiseverity_load_split` asserts at run time
+that (1) no `recording_id` appears in more than one split, (2) all four
+target classes appear in every split, (3) no individual feature window
+crosses a split boundary, and (4) all three fault severities appear in
+the fault recordings of every split.
+
+### Feature contract and the severity-leakage rule
+
+`X` is exactly `ml/src/train_baseline.py::FEATURE_COLUMNS` - the same
+nine time-domain columns Experiment 1 uses. `y` is `fault_class`.
+
+`fault_severity_in` is **experimental metadata and is never a model
+input.** The physical defect diameter of an unknown machine is not
+observable at diagnosis time, so feeding it to the classifier would
+leak information production never has. `recording_id`, `window_id`,
+`source`, `asset_id` and `sampling_rate_hz` are excluded for the same
+family of reasons - `sampling_rate_hz` in particular is 48 kHz for
+every NORMAL recording and 12 kHz for every fault recording, so it
+would act as a direct NORMAL-vs-FAULT label.
+
+### Measured results
+
+**Validation (2 HP, 767 windows)**
+
+| model               | validation_accuracy | validation_macro_f1 |
+|---------------------|--------------------|---------------------|
+| random_forest       | 0.9804             | 0.9789              |
+| gradient_boosting   | 0.9505             | 0.9470              |
+| logistic_regression | 0.8618             | 0.8514              |
+
+`random_forest` is selected on validation macro-F1 alone; the gap to
+the runner-up (0.0319) is far outside the documented 0.005 tie
+tolerance, so the "prefer the simpler model on a tie" rule does not
+apply. Test data played no part in the choice.
+
+Class-imbalance handling is **not** symmetric across the three
+candidates and this is deliberate: Logistic Regression and Random
+Forest use `class_weight="balanced"`; sklearn's
+`GradientBoostingClassifier` has no `class_weight` parameter at all.
+The only equivalent is `sample_weight` at `fit()` time, which this
+experiment does not pass, so GB trains under the raw class priors.
+
+**Test (3 HP held-out, 769 windows, Random Forest)**
+
+- accuracy 0.9649, macro-precision 0.9649, macro-recall 0.9619,
+  macro-F1 0.9625.
+- 27 / 769 windows misclassified. **Every single error is a 0.014"
+  recording.**
+
+| severity | windows | accuracy | macro-F1 | IR recall | BALL recall | OR recall |
+|----------|---------|----------|----------|-----------|-------------|-----------|
+| 0.007"   | 178     | 1.0000   | 1.0000   | 1.000     | 1.000       | 1.000     |
+| 0.014"   | 177     | 0.8475   | 0.8534   | 0.864     | 0.915       | 0.763     |
+| 0.021"   | 177     | 1.0000   | 1.0000   | 1.000     | 1.000       | 1.000     |
+
+NORMAL is not a severity bucket (recall 1.0000 on 237 windows).
+
+Confusion patterns, all inside 0.014": `OUTER_RACE -> BALL` (14
+windows, OR014@6_3), `INNER_RACE -> BALL` (8, IR014_3),
+`BALL -> INNER_RACE` (4, B014_3), `BALL -> NORMAL` (1, B014_3).
+
+### Why 0.014" is the hard severity
+
+The separability probe in the same run explains it. On the test split
+the 0.014" recordings collapse the amplitude ordering that separates
+the classes at the other two severities:
+
+| class       | 0.007" mean RMS | 0.014" mean RMS | 0.021" mean RMS |
+|-------------|-----------------|-----------------|-----------------|
+| BALL        | 0.154           | 0.130           | 0.118           |
+| INNER_RACE  | 0.314           | 0.181           | 0.448           |
+| OUTER_RACE  | 0.580           | 0.094           | 0.555           |
+
+At 0.014" the OUTER_RACE signal is *quieter* than BALL, inverting the
+relationship the model learned from the other severities. NORMAL stays
+cleanly separated everywhere (RMS 0.060-0.071 on test, no overlap with
+any fault class), which is why NORMAL recall is 1.000 throughout.
+
+This is also the answer to the Experiment-1 "suspiciously easy"
+concern. Single-feature depth-3 decision trees now reach only
+0.86-0.89 test accuracy (`vibration_rms` 0.8648, `vibration_std`
+0.8648, `vibration_peak` 0.8934) versus the full model's 0.9649, and
+the test RMS intervals of INNER_RACE, BALL and OUTER_RACE all mutually
+overlap. Adding 0.014" and 0.021" turned the trivially-separable
+Experiment-1 task into one where the classifier is doing real work -
+though NORMAL-vs-FAULT remains trivial.
+
+### Random Forest feature importance (selected model)
+
+1. `vibration_peak_to_peak` 0.255
+2. `vibration_std` 0.252
+3. `vibration_rms` 0.217
+4. `vibration_peak` 0.147
+5. `vibration_kurtosis` 0.054
+6. `vibration_skewness` 0.027
+7. `crest_factor` 0.024
+8. `rotational_speed_rpm` 0.021
+9. `motor_load_hp` 0.003
+
+The top four are strongly correlated amplitude statistics, so they
+*share* importance - a low score does not prove a feature is
+uninformative. Importance is model-specific (Gradient Boosting puts
+0.537 on `vibration_peak_to_peak` alone) and is not physical
+causation.
+
+### Figures
+
+All prefixed `experiment2_` so no baseline or audit figure is
+overwritten:
+
+- `experiment2_validation_model_comparison.png`
+- `experiment2_validation_confusion_logistic_regression.png`
+- `experiment2_validation_confusion_random_forest.png`
+- `experiment2_validation_confusion_gradient_boosting.png`
+- `experiment2_test_confusion_matrix.png`
+- `experiment2_selected_model_interpretability.png`
+- `experiment2_test_performance_by_severity.png`
+- `experiment2_rms_separability_by_class.png`
+
+### Artifacts
+
+- `ml/models/rf_multiseverity_cwru.joblib` (gitignored)
+- `ml/models/rf_multiseverity_cwru.json` (gitignored) - experiment
+  name, research question, split design, loads, severities, feature
+  columns, selected model, validation + test metrics, per-severity
+  breakdown, misclassification list, interpretability, separability
+  probe, class labels and known limitations.
+
+`rf_baseline_cwru.joblib` / `.json` are never written by this module.
+
+### Experiment-2 limitations
+
+1. CWRU is a controlled laboratory bearing dataset on a test rig, not
+   an in-service industrial fleet.
+2. Faults are **seeded** (machined defects of known diameter), not
+   naturally occurring progressive degradation.
+3. NORMAL recordings are published at 48 kHz while the selected fault
+   recordings are 12 kHz Drive End. **No resampling is performed.**
+4. A fixed 2048-sample window therefore spans ~42.7 ms for NORMAL and
+   ~170.7 ms for fault recordings - different physical durations for
+   the same nominal window size.
+5. All features are time-domain window statistics. No frequency-domain
+   features are used.
+6. These numbers are **not** production-level industrial performance.
+7. The experiment tests generalization to an unseen **motor load**
+   only. All three severities are present during training, so it is
+   NOT a test of generalization to an unseen defect size.
+8. Windows from one recording are strongly correlated, which is why
+   splitting is by complete recording rather than by random rows.
+9. `rotational_speed_rpm` is nearly a deterministic function of motor
+   load (1797/1772/1750/1730 RPM for 0/1/2/3 HP) and `motor_load_hp`
+   is constant within a recording. Both are retained for parity with
+   the inherited feature contract, but at test time both take values
+   never seen in training, so neither can contribute usable signal to
+   load generalization. Their near-zero Random Forest importance is
+   consistent with that.
+10. `fault_severity_in` is excluded from `X` by design.
+
+## Tests
+
+Lightweight contract checks live in `ml/tests/` and use the standard
+library `unittest` runner, so no extra dependency is needed:
+
+```bash
+python -m unittest discover -s ml/tests -t . -v
+```
+
+They cover recording leakage, window leakage, expected split loads,
+class coverage, severity coverage, `fault_severity_in` exclusion from
+`X`, metadata exclusion from `X`, and the invariant that
+`BASELINE_SPECS` still describes exactly the original 16 Experiment-1
+recordings. Most tests run against a synthetic frame built from the
+real metadata table, so they pass without the vendor `.mat` downloads;
+the few that need `cwru_features_expanded.csv` skip themselves when it
+is absent.
+
+## Current Experimental Status (Experiment 1 - FROZEN)
 
 Numbers below are the actual measured output from
 `python -m ml.src.run_experiment` on the 16-recording CWRU set with
@@ -305,5 +509,8 @@ Spark job emits rows that match `FEATURE_COLUMNS` in
   characteristic frequencies).
 - No SQL migrations for the ML feature schema.
 - No online integration with Kafka/Spark.
-- No model comparison, hyperparameter search, or model registry.
+- No hyperparameter search and no model registry. (Experiment 2 does
+  compare three candidate classifiers on validation, but with fixed
+  baseline configurations only.)
+- No anomaly detection and no Claude/LLM integration yet.
 - No automated download of the CWRU dataset.
