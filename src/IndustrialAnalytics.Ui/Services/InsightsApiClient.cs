@@ -28,6 +28,52 @@ namespace IndustrialAnalytics.Ui.Services
             => http.GetFromJsonAsync<DigitalTwinHistoryResponse>(
                 $"/api/v1/digital-twins/{assetId}/history?take={take}", ct);
 
+        /// <summary>
+        /// Requests an AI explanation of the asset's current ML result.
+        /// <para>
+        /// Only the asset id crosses the wire — the server owns the
+        /// authoritative Digital Twin state and builds the Claude payload
+        /// itself, so the browser can neither fabricate ML values nor see
+        /// the API key.
+        /// </para>
+        /// Returns the explanation, or an error message for the UI.
+        /// </summary>
+        public async Task<(MaintenanceExplanationResponseDto? Result, string? Error)>
+            GenerateTwinExplanationAsync(string assetId, bool refresh = false, CancellationToken ct = default)
+        {
+            using var resp = await http.PostAsync(
+                $"/api/v1/digital-twins/{assetId}/explanation?refresh={refresh.ToString().ToLowerInvariant()}",
+                content: null, ct);
+
+            if (resp.IsSuccessStatusCode)
+            {
+                var ok = await resp.Content.ReadFromJsonAsync<MaintenanceExplanationResponseDto>(ct);
+                return (ok, ok is null ? "Empty response from the API." : null);
+            }
+
+            var detail = await TryReadProblemDetailAsync(resp, ct);
+            return (null, detail ?? $"Request failed ({(int)resp.StatusCode}).");
+        }
+
+        private static async Task<string?> TryReadProblemDetailAsync(
+            HttpResponseMessage resp, CancellationToken ct)
+        {
+            try
+            {
+                using var doc = System.Text.Json.JsonDocument.Parse(
+                    await resp.Content.ReadAsStringAsync(ct));
+                if (doc.RootElement.TryGetProperty("detail", out var detail))
+                    return detail.GetString();
+                if (doc.RootElement.TryGetProperty("error", out var error))
+                    return error.GetString();
+            }
+            catch (System.Text.Json.JsonException)
+            {
+                // Non-JSON error body; fall back to the status code.
+            }
+            return null;
+        }
+
         public Task<AssetSummaryDto?> GetAssetSummaryAsync(string assetId, CancellationToken ct = default)
             => http.GetFromJsonAsync<AssetSummaryDto>($"/api/v1/assets/{assetId}/summary", ct);
 

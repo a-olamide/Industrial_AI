@@ -1,3 +1,4 @@
+using IndustrialAnalytics.Api.Services;
 using IndustrialAnalytics.Contracts.DigitalTwins;
 using IndustrialAnalytics.Infrastructure.Sql.Repositories;
 
@@ -75,6 +76,65 @@ namespace IndustrialAnalytics.Api.Endpoints
                         "Newest window first. Useful for showing that a classifier " +
                         "disagrees with ground truth on some windows while the anomaly " +
                         "detector still flags them.";
+                    return op;
+                });
+
+            app.MapPost("/digital-twins/{assetId}/explanation",
+                async (string assetId, bool? refresh,
+                       DigitalTwinExplanationService service,
+                       ILoggerFactory loggerFactory,
+                       CancellationToken ct) =>
+                {
+                    var log = loggerFactory.CreateLogger("DigitalTwinExplanation");
+                    try
+                    {
+                        var result = await service.ExplainAsync(assetId, refresh ?? false, ct);
+                        return Results.Ok(result);
+                    }
+                    catch (TwinNotFoundException ex)
+                    {
+                        return Results.NotFound(new { error = ex.Message });
+                    }
+                    catch (ClaudeNotConfiguredException ex)
+                    {
+                        // 503, not 500: the server is fine, the integration
+                        // is simply not switched on. The message names the
+                        // environment variable, never its value.
+                        log.LogWarning(ex, "Explanation requested while Claude is unconfigured.");
+                        return Results.Problem(
+                            title: "AI explanation unavailable",
+                            detail: ex.Message,
+                            statusCode: StatusCodes.Status503ServiceUnavailable);
+                    }
+                    catch (ClaudeMalformedResponseException ex)
+                    {
+                        log.LogWarning(ex, "Claude returned an unusable explanation for {AssetId}.", assetId);
+                        return Results.Problem(
+                            title: "AI explanation could not be parsed",
+                            detail: ex.Message,
+                            statusCode: StatusCodes.Status502BadGateway);
+                    }
+                    catch (ClaudeUnavailableException ex)
+                    {
+                        log.LogWarning(ex, "Claude unavailable for {AssetId}.", assetId);
+                        return Results.Problem(
+                            title: "AI explanation unavailable",
+                            detail: ex.Message,
+                            statusCode: StatusCodes.Status502BadGateway);
+                    }
+                })
+                .WithOpenApi(op =>
+                {
+                    op.Summary = "AI-generated maintenance explanation of the current ML result";
+                    op.Description =
+                        "Loads the authoritative Digital Twin state server-side, sends a narrow " +
+                        "evidence bundle to Claude, and returns a structured explanation. " +
+                        "ML predicts; Claude explains - the anomaly verdict and predicted class " +
+                        "are never produced or altered by the model, and are echoed back under " +
+                        "'mlVerdict'. Demo ground truth is NEVER sent. The caller supplies only " +
+                        "an asset id; arbitrary ML values cannot be submitted for narration. " +
+                        "Results are cached against the current windowEndSequence; pass " +
+                        "refresh=true to force a new call.";
                     return op;
                 });
 

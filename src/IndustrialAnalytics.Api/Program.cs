@@ -22,6 +22,22 @@ builder.Services.AddHttpClient<ILlmClient, OllamaLlmClient>(c =>
 });
 builder.Services.AddScoped<AssetInsightService>();
 
+// ── Claude maintenance explanations ───────────────────────────────────────
+// The API key comes from the ANTHROPIC_API_KEY environment variable (or user
+// secrets), never from appsettings.json. Everything else is plain config.
+builder.Services.AddMemoryCache();
+builder.Services.Configure<ClaudeOptions>(opts =>
+{
+    builder.Configuration.GetSection(ClaudeOptions.SectionName).Bind(opts);
+    opts.ApiKey =
+        Environment.GetEnvironmentVariable(ClaudeOptions.ApiKeyEnvironmentVariable)
+        ?? builder.Configuration[$"{ClaudeOptions.SectionName}:ApiKey"];
+});
+// Registered as IStructuredLlmClient only, so the existing ILlmClient
+// binding (Ollama, used by the legacy insight card) is left untouched.
+builder.Services.AddSingleton<IStructuredLlmClient, ClaudeLlmClient>();
+builder.Services.AddScoped<DigitalTwinExplanationService>();
+
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi

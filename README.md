@@ -169,6 +169,7 @@ Base URL: `http://localhost:5025`
 | GET | `/api/v1/digital-twins` | **ML Digital Twin** — current state for every asset |
 | GET | `/api/v1/digital-twins/{assetId}` | ML Digital Twin state for one asset |
 | GET | `/api/v1/digital-twins/{assetId}/history` | Recent inference history (`take`) |
+| POST | `/api/v1/digital-twins/{assetId}/explanation` | **Claude** maintenance explanation of the current ML result |
 
 The `digital-twins` endpoints are backed by the CWRU vibration ML
 pipeline (Kafka → Spark Structured Streaming → Isolation Forest + Random
@@ -224,6 +225,42 @@ updated. Demo ground truth appears in a visually separate panel labelled
 *"not a model output and never a model input"*, with an explicit
 MATCHES / DIFFERS verdict, and the recent-predictions table highlights
 disagreements in red rather than hiding them.
+
+Each asset card also has an **AI Maintenance Insight** section behind an
+explicit *Generate AI Insight* button (on demand, not per streaming
+window). It shows Assessment, Likely Condition, Evidence, Recommended
+Actions and a Confidence Note, labelled as an AI-generated explanation of
+the ML results rather than an independent diagnosis.
+
+---
+
+## Claude maintenance explanations — "ML predicts; Claude explains"
+
+The trained models stay authoritative. The Isolation Forest decides
+whether a window is anomalous and the Random Forest decides the fault
+class; **Claude never produces, overrides or invents either**. Its only
+job is to translate that structured result into a concise maintenance
+explanation, and the API echoes the ML verdict back alongside the prose.
+
+```bash
+export ANTHROPIC_API_KEY="sk-ant-..."   # server-side only; never committed
+```
+
+Model, token cap, timeout and caching live under the `Claude` section of
+`src/IndustrialAnalytics.Api/appsettings.json`; **the key never does**.
+The default is `claude-haiku-4-5` (~$0.003 per explanation) because this
+is a short, schema-constrained dashboard card.
+
+Claude receives the anomaly result, the predicted class with its
+probabilities, the seven engineered features, the operating context and a
+counts-only trend. It **never** receives raw vibration arrays, the CWRU
+filename, `recordingId`, or any demo ground truth — enforced at the query,
+the DTO and the test level, so the MOTOR_003 demonstration (classifier
+says `BALL`, ground truth says `OUTER_RACE`) actually proves something.
+
+Full details — prompt constraints, structured-output schema, error
+handling, security boundaries, cost control and limitations:
+**[`ml/streaming/README.md`](ml/streaming/README.md)**.
 
 ---
 

@@ -468,6 +468,213 @@ match the offline Experiment-2 and Experiment-3 numbers exactly, now
 through Kafka, Spark, SQL Server and the API. The UI shows the
 disagreements rather than hiding them.
 
+## Claude maintenance explanations — "ML predicts; Claude explains"
+
+The final layer turns the Digital Twin's numbers into prose. **Claude is
+not the detector and not the classifier.** The Isolation Forest and the
+Random Forest remain the sole authorities on whether something is
+anomalous and which fault class it is; Claude only translates their
+output into a maintenance explanation, and the API response echoes the
+ML verdict alongside the prose so the two can always be compared.
+
+```
+Digital Twin state (SQL)  ──►  narrow evidence bundle  ──►  Claude  ──►  structured explanation
+   authoritative ML output        no ground truth              Haiku 4.5      summary / condition /
+                                                                              evidence / actions /
+                                                                              confidence note
+```
+
+### Configuration
+
+| setting | where | default |
+|---|---|---|
+| API key | **`ANTHROPIC_API_KEY` environment variable** (or user secrets) | — |
+| `Claude:Model` | `appsettings.json` | `claude-haiku-4-5` |
+| `Claude:MaxTokens` | `appsettings.json` | `1024` |
+| `Claude:TimeoutSeconds` | `appsettings.json` | `30` |
+| `Claude:TrendWindowCount` | `appsettings.json` | `60` |
+| `Claude:CacheEnabled` / `CacheMinutes` | `appsettings.json` | `true` / `30` |
+
+```bash
+export ANTHROPIC_API_KEY="sk-ant-..."        # never committed, never in appsettings.json
+# or, for local dev:
+dotnet user-secrets set "Claude:ApiKey" "sk-ant-..." \
+    --project src/IndustrialAnalytics.Api
+```
+
+The key is read once at service construction and held server-side only.
+It is never logged (the startup line says whether a key was *found*,
+never any part of it), never placed in a DTO, and never reachable from
+Blazor or the browser — the client posts an asset id and nothing else.
+
+### What Claude receives — and what it never receives
+
+Sent (`ClaudeExplanationRequestDto`, ~750 characters):
+
+- `assetId`, `observedAtUtc`
+- `anomaly`: `isAnomalous`, `score`, `threshold`, score-direction note
+- `classification`: `predictedClass`, `confidence`, full `probabilities`
+- `features`: the seven engineered vibration features
+- `operatingContext`: `motorLoadHp`, `rotationalSpeedRpm`
+- `recentTrend`: counts only — windows considered, windows flagged,
+  predicted-class counts
+
+**Never sent, and asserted by tests:** raw 2048-sample vibration arrays,
+the CWRU filename, `recordingId`, `demoFaultClass`, `demoFaultSeverityIn`
+— any demo ground truth.
+
+This is enforced at three levels, not by convention:
+
+1. The service loads twin state with `includeGroundTruth: false`, so the
+   `demo_*` columns never leave the database on this path.
+2. The request DTO copies named fields rather than spreading the state
+   object, so adding a demo column later cannot silently widen the prompt.
+3. Tests assert the serialized payload contains no `demoGroundTruth`,
+   `recordingId`, `faultSeverityIn`, `OR014`, or `0.014`.
+
+Why it matters: ground truth is a classroom evaluation aid. If it reached
+the model, the explanation would be a restatement of the answer key
+rather than a reading of the evidence — and the MOTOR_003 demonstration
+below would prove nothing.
+
+### Prompt constraints
+
+The system prompt tells Claude it is not the detector or classifier, and
+forbids: changing the anomaly result, changing `predictedClass`, claiming
+certainty beyond the supplied confidence, inventing sensor readings or
+maintenance history, and proposing unsupported causes. It requires
+distinguishing a model *prediction* from a confirmed diagnosis,
+recommending inspection rather than asserting that costly or destructive
+work is necessary, stating uncertainty explicitly when confidence is low
+or probabilities are close, explaining detector/classifier disagreement
+rather than hiding it, and *not* inventing a fault when both models say
+normal.
+
+### Structured output
+
+The response is constrained by a JSON schema (`output_config.format`), so
+the five UI fields — `summary`, `likelyCondition`, `evidence`,
+`recommendedActions`, `confidenceNote` — are guaranteed rather than
+parsed hopefully. Output is still validated afterwards: an unparseable or
+empty-summary response raises `ClaudeMalformedResponseException` and the
+page shows an error, and a partial-but-valid response is filled with safe
+defaults. **Malformed AI output can never break the Digital Twin page.**
+
+### Endpoint
+
+```
+POST /api/v1/digital-twins/{assetId}/explanation[?refresh=true]
+```
+
+The caller supplies only an asset id. The server loads the authoritative
+state itself, so a client cannot submit fabricated ML values and have the
+server narrate them as real.
+
+| condition | status |
+|---|---|
+| unknown asset | `404` |
+| `ANTHROPIC_API_KEY` not configured | `503` (server is fine; the integration is off) |
+| Claude timeout / upstream failure / refusal | `502` |
+| response fails schema validation | `502` |
+
+### UI
+
+`/digital-twin` gains an **AI Maintenance Insight** section per asset,
+behind an explicit **Generate AI Insight** button — explanations are not
+produced for every page refresh or every streaming window. It shows
+Assessment, Likely Condition, Evidence, Recommended Actions and a
+Confidence Note, labelled *"an AI-generated explanation of the ML results
+above, not an independent diagnosis"*, with loading and error states and
+a footer restating the ML verdict being explained.
+
+### The MOTOR_003 case
+
+`OR014@6_3` is the demonstration that matters. The Random Forest gets
+45/59 windows right and calls 14 of them `BALL`, so the current twin
+state often reads `BALL` while the demo ground truth says `OUTER_RACE`.
+
+Claude never sees `OUTER_RACE` as a ground-truth label. It sees
+`predictedClass: "BALL"` with `probabilities: {BALL: 0.68, OUTER_RACE:
+0.32, ...}` — the classifier's own distribution — and the prompt requires
+it to explain what the classifier said and to state the uncertainty when
+the top two probabilities are close. It cannot produce `OUTER_RACE` from
+demo metadata, because the metadata is not in the request. A test asserts
+this directly.
+
+### Cost control
+
+Measured request size for a MOTOR_003 explanation:
+
+| part | chars | ≈ tokens |
+|---|---|---|
+| system prompt | 2,788 | 697 |
+| response schema | 1,440 | 360 |
+| evidence bundle | 748 | 187 |
+| **total input** | **4,976** | **~1,244** |
+
+At Claude Haiku 4.5 ($1/$5 per MTok) with a ~350-token answer, that is
+roughly **$0.003 per explanation**; the same call on `claude-opus-5`
+would be ~$0.015. Haiku 4.5 is the default because this is a short,
+schema-constrained explanation of nine numbers for a dashboard card —
+switch via `Claude:Model` if a deployment values explanation depth over
+cost.
+
+Four controls keep spend bounded: explanations are **on-demand only**
+(never per 2048-sample window), `MaxTokens` is capped at 1024, the
+evidence bundle carries counts rather than history rows, and results are
+**cached against `(assetId, windowEndSequence)`** so repeated requests for
+an unchanged twin state cost nothing. `?refresh=true` bypasses the cache.
+
+### Live verification
+
+**No live Claude call was made while building this.** `ANTHROPIC_API_KEY`
+was not set in the build environment and no `ant` CLI profile existed, so
+the integration is verified by 41 mocked tests plus the live
+unconfigured-path checks below. To verify against the real API yourself:
+
+```bash
+export ANTHROPIC_API_KEY="sk-ant-..."
+DOTNET_ROLL_FORWARD=Major dotnet run --project src/IndustrialAnalytics.Api \
+    --urls http://localhost:5025 &
+
+curl -s -X POST http://localhost:5025/api/v1/digital-twins/MOTOR_003/explanation \
+  | python3 -m json.tool
+```
+
+Verified live without a key (real API, real HTTP):
+
+```
+POST /api/v1/digital-twins/MOTOR_003/explanation     -> 503
+  {"title":"AI explanation unavailable",
+   "detail":"ANTHROPIC_API_KEY is not configured on the server."}
+POST /api/v1/digital-twins/NO_SUCH_ASSET/explanation -> 404
+  {"error":"No Digital Twin state for asset 'NO_SUCH_ASSET'."}
+```
+
+Zero key-like strings appear in the API log.
+
+### Security boundaries
+
+- Claude calls originate **server-side only**; the Blazor client posts an
+  asset id and receives rendered text.
+- The API key never enters a DTO, a log line, or an HTTP response.
+- The client cannot supply ML values for narration.
+- Demo ground truth is excluded at the query, the DTO and the test level.
+- Claude's output is validated before it reaches the UI.
+
+### Limitations
+
+- Explanation quality is unverified against a live model — the shape is
+  guaranteed by the schema, but no human has read a real answer yet.
+- The cache is in-process (`IMemoryCache`); a multi-instance deployment
+  would re-bill once per instance.
+- There is no rate limit on the endpoint beyond the cache; a determined
+  caller can spend money by passing `refresh=true` repeatedly.
+- The explanation is not persisted — it is not part of the Digital Twin
+  state and is lost on restart.
+- Trend counts are the only history given to Claude; it cannot see when a
+  prediction changed, only how often each class occurred.
+
 ## Known limitations
 
 1. ~~Kafka and Docker were not exercised.~~ **Now verified.** The full
