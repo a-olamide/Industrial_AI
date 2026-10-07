@@ -113,18 +113,22 @@ services:
     depends_on:
       kafka:
         condition: service_healthy
+    # Creates both topics. They carry different contracts:
+    #   industrial-telemetry          legacy, one row per sensor tag
+    #   industrial.telemetry.vibration  one row per raw vibration sample
+    # Keyed by assetId, so one partition holds a given asset's samples in
+    # order - which the 2048-sample windowing depends on.
+    entrypoint: ["/bin/bash", "-c"]
     command:
-      - /opt/kafka/bin/kafka-topics.sh
-      - --bootstrap-server
-      - kafka:29092
-      - --create
-      - --if-not-exists
-      - --topic
-      - industrial-telemetry
-      - --partitions
-      - "6"
-      - --replication-factor
-      - "1"
+      - |
+        set -e
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 \
+          --create --if-not-exists --topic industrial-telemetry \
+          --partitions 6 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 \
+          --create --if-not-exists --topic industrial.telemetry.vibration \
+          --partitions 3 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 --list
     restart: "no"
 
   # ── Grafana ────────────────────────────────────────────────────────────────
@@ -163,6 +167,44 @@ services:
       - ./spark/hive-warehouse:/opt/spark/hive-warehouse
       - ./spark/metastore:/opt/spark/metastore
     entrypoint: ["/bin/bash", "/opt/spark/submit.sh"]
+    restart: unless-stopped
+
+  # ── Spark Structured Streaming — CWRU vibration ML inference ───────────────
+  # Separate from the `spark` service above so the legacy analytics job is
+  # untouched. Uses a derived image because the stock apache/spark has no
+  # scikit-learn and therefore cannot unpickle the trained models.
+  #
+  # Reads  : kafka topic industrial.telemetry.vibration
+  # Loads  : ml/models/rf_multiseverity_cwru.joblib  (Experiment 2)
+  #          ml/models/isolation_forest_cwru.joblib  (Experiment 3)
+  # Writes : JSONL inference results to spark/inference-output/
+  # Job UI : http://localhost:4041
+  #
+  # Model artifacts are gitignored. Run the two experiments once before
+  # starting this service, or it exits with a clear "missing artifact".
+  spark-vibration:
+    build:
+      context: .
+      dockerfile: spark/Dockerfile.ml
+    image: industrial/spark-ml:3.5.1
+    container_name: industrial_spark_vibration
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "4041:4041"
+    environment:
+      KAFKA_BOOTSTRAP: "kafka:29092"
+      VIBRATION_TOPIC: "industrial.telemetry.vibration"
+      PYTHONPATH: "/opt"
+    volumes:
+      - ./ml:/opt/ml:ro
+      - ./spark/jobs:/opt/spark/jobs:ro
+      - ./spark/submit_vibration.sh:/opt/spark/submit_vibration.sh:ro
+      - ./spark/checkpoints:/opt/spark/checkpoints
+      - ./spark/inference-output:/opt/spark/inference-output
+      - ./spark/.ivy2:/home/spark/.ivy2
+    entrypoint: ["/bin/bash", "/opt/spark/submit_vibration.sh"]
     restart: unless-stopped
 
 volumes:

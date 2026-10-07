@@ -38,6 +38,15 @@ ml/
 │   ├── audit_expanded_dataset.py  <- 40-recording dataset audit
 │   ├── experiment2_multiseverity.py <- Experiment 2 (multi-severity)
 │   └── experiment3_anomaly_detection.py <- Experiment 3 (unsupervised)
+├── streaming/                <- ONLINE pipeline (Kafka -> Spark -> inference)
+│   ├── contracts.py          <- telemetry + inference message contracts
+│   ├── stream_features.py    <- streaming feature implementation
+│   ├── windowing.py          <- per-asset 2048-sample window assembly
+│   ├── inference.py          <- loads frozen models, validates feature order
+│   ├── spark_inference_job.py <- Spark Structured Streaming job
+│   ├── replay_producer.py    <- CWRU -> Kafka telemetry simulator
+│   ├── demo_end_to_end.py    <- three-scenario demonstration
+│   └── README.md             <- streaming docs, commands, limitations
 ├── tests/                    <- stdlib unittest contract checks
 ├── models/                   <- trained artifacts (gitignored)
 └── reports/figures/          <- generated plots
@@ -625,7 +634,15 @@ features, that the anomaly feature set is a strict subset of the
 supervised contract, and that the Experiment-1 and Experiment-2
 contracts are unchanged.
 
-Current: **46 tests, all passing.**
+`test_streaming_pipeline.py` covers the online pipeline: telemetry
+schema parsing, 2048-sample window boundaries, non-overlap, asset
+isolation, out-of-order and duplicate delivery, feature parity against
+the offline training code (streaming and Spark SQL implementations),
+exact model feature ordering, and ground-truth exclusion from X. The
+Spark tests need `pyspark` and a JVM; model tests need the gitignored
+`.joblib` artifacts. All skip cleanly when a prerequisite is missing.
+
+Current: **76 tests, all passing.**
 
 ## Current Experimental Status (Experiment 1 - FROZEN)
 
@@ -708,12 +725,46 @@ The offline model is portable to the online pipeline **iff** the
 Spark job emits rows that match `FEATURE_COLUMNS` in
 `ml/src/train_baseline.py`. That is the contract.
 
+## Online streaming inference (phase 4)
+
+The three experiments above are frozen. `ml/streaming/` operationalises
+them against live telemetry:
+
+```
+CWRU recording -> replay simulator -> Kafka -> Spark Structured Streaming
+    -> 2048-sample windows -> same 7 features -> Isolation Forest + Random Forest
+        -> structured inference result
+```
+
+No model is retrained. Both artifacts are loaded read-only and their
+feature order is validated against the saved experiment metadata before
+a single row is scored.
+
+Quick start:
+
+```bash
+pip install -r ml/requirements.txt -r ml/requirements-streaming.txt
+python -m ml.src.experiment2_multiseverity      # regenerate gitignored artifacts
+python -m ml.src.experiment3_anomaly_detection
+python -m ml.streaming.demo_end_to_end          # replay + Spark + scoring
+```
+
+The live pipeline reproduces the offline results exactly — 14/59
+misclassified `OR014@6_3` windows (Experiment 2) and 4/237 NORMAL false
+alarms (Experiment 3) — which is the strongest available evidence that
+online feature engineering matches training.
+
+Full details, message contracts, Docker commands and limitations:
+**[`ml/streaming/README.md`](streaming/README.md)**.
+
 ## Non-goals for this branch
 
 - No frequency-domain features (FFT bands, envelope spectrum, bearing
   characteristic frequencies).
 - No SQL migrations for the ML feature schema.
-- No online integration with Kafka/Spark.
+- No SQL Server persistence of inference results, no dashboard, and
+  no Claude/LLM integration. (Kafka/Spark streaming inference itself
+  is now implemented — see `ml/streaming/`.)
 - No hyperparameter search and no model registry. (Experiment 2 does
   compare three candidate classifiers on validation, but with fixed
   baseline configurations only.)

@@ -1,0 +1,13 @@
+# Extra dependencies for the ONLINE streaming inference pipeline only.
+# The offline experiments (ml/requirements.txt) do not need these, so they
+# are kept separate rather than forcing a ~400 MB PySpark download on
+# anyone who only wants to reproduce Experiments 1-3.
+#
+# Install with:
+#   pip install -r ml/requirements.txt -r ml/requirements-streaming.txt
+#
+# PySpark 3.5.1 matches the apache/spark:3.5.1 image used by docker-compose,
+# so the job behaves identically locally and in the container. PySpark 3.5
+# requires Java 8/11/17.
+pyspark==3.5.1
+kafka-python-ng>=2.2

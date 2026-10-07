@@ -48,3 +48,18 @@ ml/models/*.json
 
 # Generated columnar data (does not untrack files already committed)
 *.parquet
+# ── Spark runtime / generated state ───────────────────────────────────────
+# Streaming checkpoints, the Ivy jar cache, the embedded Derby metastore,
+# the Hive warehouse, and streaming inference output are all regenerated
+# at run time and must never be committed.
+#
+# NOTE: ~6,400 files under spark/.ivy2, spark/metastore, spark/hive-warehouse
+# and spark/checkpoints were committed before this rule existed, so they
+# remain tracked — a .gitignore rule does not untrack an existing file.
+# See ml/streaming/README.md ("Repository hygiene") for the cleanup command.
+spark/checkpoints/**
+!spark/checkpoints/.gitkeep
+spark/.ivy2/
+spark/metastore/
+spark/hive-warehouse/
+spark/inference-output/
