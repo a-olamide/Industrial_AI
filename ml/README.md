@@ -36,7 +36,8 @@ ml/
 │   ├── evaluate.py           <- classification report + confusion matrix
 │   ├── run_experiment.py     <- Experiment 1 (FROZEN 0.007" baseline)
 │   ├── audit_expanded_dataset.py  <- 40-recording dataset audit
-│   └── experiment2_multiseverity.py <- Experiment 2 (multi-severity)
+│   ├── experiment2_multiseverity.py <- Experiment 2 (multi-severity)
+│   └── experiment3_anomaly_detection.py <- Experiment 3 (unsupervised)
 ├── tests/                    <- stdlib unittest contract checks
 ├── models/                   <- trained artifacts (gitignored)
 └── reports/figures/          <- generated plots
@@ -404,6 +405,200 @@ overwritten:
    consistent with that.
 10. `fault_severity_in` is excluded from `X` by design.
 
+## Experiment 3 - unsupervised anomaly detection
+
+**Research question:** can an unsupervised model learn NORMAL bearing
+behaviour and flag fault-condition windows as anomalous, *without
+using fault labels during training*?
+
+```bash
+python -m ml.src.experiment3_anomaly_detection
+```
+
+Experiments 1 and 2 are frozen and are neither re-fit nor overwritten.
+This module writes only `experiment3_*` figures and
+`isolation_forest_cwru.{joblib,json}`.
+
+### A different question, not a better model
+
+| | Experiment 2 (supervised RF) | Experiment 3 (Isolation Forest) |
+|---|---|---|
+| question | "which known fault class is this?" | "does this differ from learned normal?" |
+| labels at fit time | yes | **none** |
+| output | one of 4 fault classes | NORMAL / ANOMALOUS + a score |
+| can name the fault | yes | **no** |
+
+Isolation Forest provides an anomaly *signal* only. Nothing in this
+experiment identifies the physical fault type.
+
+### Unsupervised training methodology
+
+`fit()` sees **NORMAL windows from 0 and 1 HP only** — 355 windows
+from `Normal_0` and `Normal_1`, with no `y` argument. The 1,062 fault
+windows that exist at those same loads are deliberately discarded.
+`fit_isolation_forest()` raises if handed any non-NORMAL row, so the
+guarantee is enforced rather than merely intended.
+
+| split | motor load | composition | windows |
+|---|---|---|---|
+| train (fit) | 0 + 1 HP | NORMAL only | 355 |
+| validation | 2 HP | NORMAL 236 / FAULT 531 | 767 |
+| test | 3 HP | NORMAL 237 / FAULT 532 | 769 |
+
+Fault labels are used strictly **after** inference, to score detection
+and to choose the operating threshold on validation.
+
+### Feature decision: the supervised contract is NOT reused
+
+`X` is 7 vibration-derived statistics — `vibration_rms`,
+`vibration_std`, `vibration_peak`, `vibration_peak_to_peak`,
+`vibration_kurtosis`, `vibration_skewness`, `crest_factor`.
+
+`rotational_speed_rpm` and `motor_load_hp` are **dropped**, and the
+run prints the evidence behind that. They are constant within a
+recording and the split is *by motor load*, so their train/validation/
+test value sets are disjoint by construction (train RPM 1772-1796,
+validation 1748-1754, test 1721-1729).
+
+Honest reporting of what the diagnostic actually showed: validation
+did **not** penalize including them. At a 5th-percentile train
+threshold the 9-feature variant scored validation FPR 0.042 / AUC
+0.9999 against the 7-feature 0.064 / 0.9993, and an
+operating-point-only detector scored **AUC 0.5000 and flagged nothing
+at all**. The reason is that Isolation Forest measures isolation
+*depth*, not distance: with only two distinct training operating
+points those axes can be split at most once, so in-range and far-
+out-of-range values terminate at the same shallow depth.
+
+They are dropped on **validity** grounds, not measured harm:
+
+1. They encode the experimental condition that *defines* the split, so
+   any credit they earn is unattributable between "vibration is
+   abnormal" and "operating point is unfamiliar" — and because every
+   validation window shares the same unseen load, no aggregate metric
+   computed here can separate those two explanations.
+2. Isolation Forest's blindness to out-of-range values is an accident
+   of this algorithm plus two training load points. A distance-based
+   detector (LOF, one-class SVM, Mahalanobis) would key on them.
+3. The question is about vibration anomaly. A detector should alarm
+   because vibration changed, not because the load is unfamiliar.
+
+### Configuration and threshold strategy
+
+`Pipeline(StandardScaler → IsolationForest(n_estimators=200,
+max_samples='auto'→256, contamination='auto', max_features=1.0,
+random_state=42))`. The scaler is a monotonic per-feature affine map,
+so it does not change axis-aligned isolation; it is kept for artifact
+self-containment.
+
+Contamination is **not** set from the fault proportion in validation
+or test — the fraction of broken machines is exactly what a deployed
+detector does not know. The forest is fit once with
+`contamination='auto'` (which affects only the decision offset, never
+the trees) and the operating threshold is chosen explicitly:
+
+| candidate | threshold | label-free | val F1 (ANOM) | val FPR on NORMAL |
+|---|---|---|---|---|
+| sklearn_default | -0.5000 | yes | 0.9655 | 0.1610 |
+| **train_quantile_0.01** | **-0.6153** | **yes** | **0.9953** | **0.0212** |
+| train_quantile_0.05 | -0.5603 | yes | 0.9861 | 0.0636 |
+| train_quantile_0.10 | -0.5163 | yes | 0.9734 | 0.1229 |
+| validation_f1_optimal | -0.6645 | no | 0.9972 | 0.0127 |
+
+`train_quantile_0.01` — the 1% quantile of `score_samples` over the
+NORMAL *training* windows — is selected. It is within the documented
+0.01 F1 tolerance of the best candidate and is **label-free**: it is
+derived from healthy data alone, so the same procedure works on a real
+machine where no fault labels exist. The threshold was then frozen
+before the test split was scored.
+
+### Score direction (stated so it cannot be misread)
+
+`score_samples`: **HIGHER = more normal, LOWER = more anomalous.** A
+window is `ANOMALOUS` when `score_samples < threshold`, i.e. to the
+LEFT of the dashed line in every figure.
+
+### Results
+
+**Validation (2 HP)** — accuracy 0.9935, precision(ANOM) 0.9907,
+recall(ANOM) 1.0000, F1(ANOM) 0.9953, FPR on NORMAL 0.0212 (5/236),
+FNR on faults 0.0000.
+
+**Test (3 HP, scored once)** — accuracy 0.9948, precision(ANOM)
+0.9925, recall(ANOM) 1.0000, F1(ANOM) 0.9963, FPR on NORMAL 0.0169
+(4/237), FNR on faults 0.0000.
+
+```
+predicted   NORMAL  ANOMALOUS
+NORMAL         233          4
+ANOMALOUS        0        532
+```
+
+Detection rate by fault class (test): INNER_RACE 178/178, BALL
+177/177, OUTER_RACE 177/177 — all 1.0000. NORMAL reference: 4/237
+flagged (0.0169).
+
+Detection rate by severity (test): 0.007" 178/178, 0.014" 177/177,
+0.021" 177/177 — all 1.0000. Mean score is essentially flat across
+severities (-0.752 / -0.758 / -0.764), i.e. severity does not modulate
+detectability here.
+
+### Relationship to the supervised classifier
+
+The informative cell is where Experiment 2 named the *wrong* fault
+type. On the same 3 HP test windows:
+
+| severity | Exp 2: correct fault TYPE | Exp 3: flagged ANOMALOUS | Exp 2 errors | of those, detected |
+|---|---|---|---|---|
+| 0.007" | 1.0000 | 1.0000 | 0 | — |
+| 0.014" | **0.8475** | **1.0000** | 27 | **27 (100%)** |
+| 0.021" | 1.0000 | 1.0000 | 0 | — |
+
+**All 27 fault windows the supervised classifier misclassified were
+still flagged as anomalous.** The 0.014" severity that collapses the
+amplitude ordering used for *typing* does not make those windows look
+normal — they remain comfortably outside learned healthy behaviour.
+That is a genuine argument for running both models side by side:
+the detector answers "something is wrong" even where the classifier
+cannot reliably answer "what is wrong".
+
+This is a statement about detection, not diagnosis. Isolation Forest
+never identifies the fault type.
+
+### Experiment-3 limitations
+
+1. CWRU NORMAL recordings are 48 kHz; the selected fault recordings
+   are 12 kHz. **No resampling is performed.**
+2. A fixed 2048-sample window therefore spans ~42.7 ms for NORMAL and
+   ~170.7 ms for fault recordings.
+3. Experiment 2 already showed NORMAL-vs-FAULT to be the *easy* axis
+   of this dataset (NORMAL test RMS 0.060-0.071, zero overlap with any
+   fault class). Experiment 3 measures exactly that axis, so 100%
+   detection partly reflects acquisition and dataset characteristics
+   rather than detector sophistication.
+4. NORMAL and FAULT recordings differ in **both** health state and
+   sampling rate, so the two effects are confounded and cannot be
+   separated with this data. A same-sampling-rate healthy baseline
+   would be needed to attribute the separation to bearing health
+   alone.
+5. "Normal" was learned from 355 windows across two recordings of one
+   healthy bearing — very little legitimate operational variety, so
+   the 1.7% false-alarm rate is optimistic for a real fleet.
+6. Isolation Forest gives an anomaly signal only; it does not identify
+   the physical fault type.
+7. Results must not be presented as production industrial
+   performance.
+
+### Figures and artifacts
+
+- `experiment3_score_distribution_normal_vs_fault.png`
+- `experiment3_score_distribution_by_fault_class.png`
+- `experiment3_score_distribution_by_severity.png`
+- `experiment3_test_confusion_matrix.png`
+- `experiment3_threshold_selection.png`
+- `experiment3_vs_experiment2_by_severity.png`
+- `ml/models/isolation_forest_cwru.joblib` + `.json` (both gitignored)
+
 ## Tests
 
 Lightweight contract checks live in `ml/tests/` and use the standard
@@ -421,6 +616,16 @@ recordings. Most tests run against a synthetic frame built from the
 real metadata table, so they pass without the vendor `.mat` downloads;
 the few that need `cwru_features_expanded.csv` skip themselves when it
 is absent.
+
+`test_experiment3_contracts.py` adds the unsupervised guarantees: that
+`fit()` receives NORMAL windows only and **raises** when handed a
+fault, that the fitted estimator saw exactly the 7 vibration columns,
+that `fault_class` / `fault_severity_in` / metadata are not anomaly
+features, that the anomaly feature set is a strict subset of the
+supervised contract, and that the Experiment-1 and Experiment-2
+contracts are unchanged.
+
+Current: **46 tests, all passing.**
 
 ## Current Experimental Status (Experiment 1 - FROZEN)
 
@@ -512,5 +717,7 @@ Spark job emits rows that match `FEATURE_COLUMNS` in
 - No hyperparameter search and no model registry. (Experiment 2 does
   compare three candidate classifiers on validation, but with fixed
   baseline configurations only.)
-- No anomaly detection and no Claude/LLM integration yet.
+- No Claude/LLM integration yet. (Experiment 3 adds unsupervised
+  anomaly detection; Kafka/Spark/Digital-Twin integration remains
+  out of scope.)
 - No automated download of the CWRU dataset.
