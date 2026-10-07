@@ -29,6 +29,7 @@ namespace IndustrialAnalytics.Infrastructure.DependencyInjection
             services.AddSingleton<IRecommendationRepository, RecommendationRepository>();
             services.AddSingleton<IRecommendationCommandRepository, RecommendationCommandRepository>();
             services.AddSingleton<IRecommendationQueryRepository, RecommendationQueryRepository>();
+            services.AddSingleton<IDigitalTwinQueryRepository, DigitalTwinQueryRepository>();
 
             return services;
         }

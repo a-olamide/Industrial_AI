@@ -237,6 +237,127 @@ BEGIN
 END
 GO
 
+-- ── 9. asset_twin_current ────────────────────────────────────
+-- Digital Twin CURRENT STATE per asset, upserted by the Spark vibration
+-- inference job. One row per asset; the most recent completed 2048-sample
+-- window wins.
+--
+-- COLUMN GROUPS — the separation here is deliberate and load-bearing:
+--   model output     is_anomalous / anomaly_* / predicted_class / confidence
+--   operating ctx    motor_load_hp / rotational_speed_rpm   (drive-reported)
+--   features         vibration_* / crest_factor             (engineered)
+--   DEMO GROUND TRUTH  every column prefixed `demo_`
+--
+-- The `demo_` prefix exists so ground truth can never be mistaken for a
+-- model output in a query, a DTO or on screen. It is written for
+-- demonstration scoring only and is NEVER read back into inference.
+IF OBJECT_ID('dbo.asset_twin_current', 'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.asset_twin_current (
+        asset_id                 NVARCHAR(64)  NOT NULL,
+        last_updated_utc         DATETIME2(3)  NOT NULL,
+
+        -- window provenance
+        window_start_sequence    BIGINT        NOT NULL,
+        window_end_sequence      BIGINT        NOT NULL,
+        sample_count             INT           NOT NULL,
+
+        -- MODEL OUTPUT — anomaly detector (Experiment 3)
+        is_anomalous             BIT           NOT NULL,
+        anomaly_score            FLOAT         NOT NULL,
+        anomaly_threshold        FLOAT         NOT NULL,
+
+        -- MODEL OUTPUT — fault classifier (Experiment 2)
+        predicted_class          NVARCHAR(32)  NOT NULL,
+        confidence               FLOAT         NULL,
+        class_probabilities_json NVARCHAR(512) NULL,
+
+        -- ENGINEERED FEATURES (the 7-feature streaming contract)
+        vibration_rms            FLOAT         NOT NULL,
+        vibration_std            FLOAT         NOT NULL,
+        vibration_peak           FLOAT         NOT NULL,
+        vibration_peak_to_peak   FLOAT         NOT NULL,
+        vibration_kurtosis       FLOAT         NOT NULL,
+        vibration_skewness       FLOAT         NOT NULL,
+        crest_factor             FLOAT         NOT NULL,
+
+        -- OPERATING CONTEXT
+        motor_load_hp            FLOAT         NULL,
+        rotational_speed_rpm     FLOAT         NULL,
+
+        -- DEMO GROUND TRUTH ONLY — never an inference input
+        demo_recording_id        NVARCHAR(64)  NULL,
+        demo_fault_class         NVARCHAR(32)  NULL,
+        demo_fault_severity_in   FLOAT         NULL,
+
+        updated_at               DATETIME2(0)  NOT NULL CONSTRAINT df_atc_updated_at DEFAULT SYSUTCDATETIME(),
+
+        CONSTRAINT pk_asset_twin_current PRIMARY KEY (asset_id)
+    );
+
+    PRINT 'Created dbo.asset_twin_current';
+END
+GO
+
+-- ── 10. asset_twin_inference_history ─────────────────────────
+-- Append-only history of every window scored. Deliberately NOT event
+-- sourcing: asset_twin_current is a plain upserted projection, and this
+-- table is just the audit trail behind it.
+--
+-- The unique index on (asset_id, window_end_sequence) makes replay
+-- idempotent: Spark's `update` output mode can re-emit a completed
+-- window, and at-least-once Kafka delivery can redeliver samples, so the
+-- writer inserts only when the window is not already recorded.
+IF OBJECT_ID('dbo.asset_twin_inference_history', 'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.asset_twin_inference_history (
+        inference_id             BIGINT        NOT NULL IDENTITY(1,1),
+        asset_id                 NVARCHAR(64)  NOT NULL,
+        inferred_at_utc          DATETIME2(3)  NOT NULL,
+
+        window_start_sequence    BIGINT        NOT NULL,
+        window_end_sequence      BIGINT        NOT NULL,
+        sample_count             INT           NOT NULL,
+
+        is_anomalous             BIT           NOT NULL,
+        anomaly_score            FLOAT         NOT NULL,
+        anomaly_threshold        FLOAT         NOT NULL,
+
+        predicted_class          NVARCHAR(32)  NOT NULL,
+        confidence               FLOAT         NULL,
+        class_probabilities_json NVARCHAR(512) NULL,
+
+        vibration_rms            FLOAT         NOT NULL,
+        vibration_std            FLOAT         NOT NULL,
+        vibration_peak           FLOAT         NOT NULL,
+        vibration_peak_to_peak   FLOAT         NOT NULL,
+        vibration_kurtosis       FLOAT         NOT NULL,
+        vibration_skewness       FLOAT         NOT NULL,
+        crest_factor             FLOAT         NOT NULL,
+
+        motor_load_hp            FLOAT         NULL,
+        rotational_speed_rpm     FLOAT         NULL,
+
+        demo_recording_id        NVARCHAR(64)  NULL,
+        demo_fault_class         NVARCHAR(32)  NULL,
+        demo_fault_severity_in   FLOAT         NULL,
+
+        inserted_at              DATETIME2(0)  NOT NULL CONSTRAINT df_atih_inserted_at DEFAULT SYSUTCDATETIME(),
+
+        CONSTRAINT pk_asset_twin_inference_history PRIMARY KEY (inference_id)
+    );
+
+    CREATE UNIQUE INDEX ux_atih_asset_window
+        ON dbo.asset_twin_inference_history (asset_id, window_end_sequence);
+
+    CREATE INDEX ix_atih_asset_time
+        ON dbo.asset_twin_inference_history (asset_id, inferred_at_utc DESC)
+        INCLUDE (predicted_class, confidence, is_anomalous, anomaly_score);
+
+    PRINT 'Created dbo.asset_twin_inference_history';
+END
+GO
+
 PRINT '-------------------------------------------------------';
 PRINT 'Schema initialisation complete — Industrail_AI is ready.';
 PRINT '-------------------------------------------------------';

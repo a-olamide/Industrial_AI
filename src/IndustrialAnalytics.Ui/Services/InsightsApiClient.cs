@@ -1,5 +1,6 @@
 ﻿using IndustrialAnalytics.Contracts.Anomalies;
 using IndustrialAnalytics.Contracts.Assets;
+using IndustrialAnalytics.Contracts.DigitalTwins;
 using IndustrialAnalytics.Contracts.Insights;
 using IndustrialAnalytics.Contracts.Recommendations;
 using IndustrialAnalytics.Contracts.Risk;
@@ -10,6 +11,22 @@ namespace IndustrialAnalytics.Ui.Services
     {
         public Task<AssetListResponse?> GetAssetsAsync(CancellationToken ct = default)
             => http.GetFromJsonAsync<AssetListResponse>("/api/v1/assets", ct);
+
+        // ── ML Digital Twin (Spark streaming inference) ──────────────────
+        public Task<DigitalTwinListResponse?> GetDigitalTwinsAsync(
+            bool includeGroundTruth = true, CancellationToken ct = default)
+            => http.GetFromJsonAsync<DigitalTwinListResponse>(
+                $"/api/v1/digital-twins?includeGroundTruth={includeGroundTruth.ToString().ToLowerInvariant()}", ct);
+
+        public Task<DigitalTwinStateDto?> GetDigitalTwinAsync(
+            string assetId, bool includeGroundTruth = true, CancellationToken ct = default)
+            => http.GetFromJsonAsync<DigitalTwinStateDto>(
+                $"/api/v1/digital-twins/{assetId}?includeGroundTruth={includeGroundTruth.ToString().ToLowerInvariant()}", ct);
+
+        public Task<DigitalTwinHistoryResponse?> GetDigitalTwinHistoryAsync(
+            string assetId, int take = 60, CancellationToken ct = default)
+            => http.GetFromJsonAsync<DigitalTwinHistoryResponse>(
+                $"/api/v1/digital-twins/{assetId}/history?take={take}", ct);
 
         public Task<AssetSummaryDto?> GetAssetSummaryAsync(string assetId, CancellationToken ct = default)
             => http.GetFromJsonAsync<AssetSummaryDto>($"/api/v1/assets/{assetId}/summary", ct);

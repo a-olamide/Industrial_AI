@@ -1,0 +1,379 @@
+@page "/digital-twin"
+@page "/digital-twin/{AssetId}"
+@using IndustrialAnalytics.Contracts.DigitalTwins
+@inject IndustrialAnalytics.Ui.Services.InsightsApiClient Api
+@rendermode InteractiveServer
+
+<PageTitle>ML Digital Twin</PageTitle>
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <div>
+        <h3 class="mb-0">ML Digital Twin</h3>
+        <small class="text-muted">
+            Live state from the CWRU replay &rarr; Kafka &rarr; Spark Structured Streaming
+            &rarr; Isolation Forest + Random Forest pipeline.
+        </small>
+    </div>
+    <div>
+        <button class="btn btn-sm btn-outline-secondary" @onclick="RefreshAsync" disabled="@_loading">
+            @(_loading ? "Refreshing..." : "Refresh")
+        </button>
+    </div>
+</div>
+
+@if (_loading && _twins is null)
+{
+    <p>Loading...</p>
+}
+else if (_error is not null)
+{
+    <div class="alert alert-danger">
+        <strong>Could not load Digital Twin state.</strong>
+        <div><code>@_error</code></div>
+        <div class="mt-2 small">
+            The API must be running and <code>dbo.asset_twin_current</code> must be populated
+            by the Spark vibration inference job.
+        </div>
+    </div>
+}
+else if (_twins is null || _twins.Count == 0)
+{
+    <div class="alert alert-info">
+        <strong>No Digital Twin state yet.</strong>
+        <div class="small mt-2">
+            Start the pipeline and replay a scenario, e.g.<br />
+            <code>python -m ml.streaming.replay_producer --recording OR014@@6_3 --asset MOTOR_003 --sink kafka --bootstrap localhost:9092</code>
+        </div>
+    </div>
+}
+else
+{
+    @foreach (var twin in _twins)
+    {
+        var anomalous = twin.Anomaly.IsAnomalous;
+        var healthClass = anomalous ? "danger" : "success";
+        var healthText = anomalous ? "ANOMALOUS" : "NORMAL";
+
+        <div class="card mb-4 shadow-sm">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <div>
+                    <span class="text-muted small text-uppercase">Asset</span>
+                    <h4 class="mb-0">@twin.AssetId</h4>
+                </div>
+                <div class="text-end">
+                    <span class="text-muted small text-uppercase d-block">Last updated</span>
+                    <span>@twin.LastUpdatedUtc.ToString("yyyy-MM-dd HH:mm:ss") UTC</span>
+                </div>
+            </div>
+
+            <div class="card-body">
+                <!-- ───────── MODEL OUTPUT ───────── -->
+                <div class="row g-3 mb-2">
+                    <div class="col-md-3">
+                        <div class="border rounded p-3 h-100 text-center bg-light">
+                            <div class="text-muted small text-uppercase">Health</div>
+                            <div class="fs-3 fw-bold text-@healthClass">@healthText</div>
+                            <div class="small text-muted">Isolation Forest</div>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="border rounded p-3 h-100 text-center bg-light">
+                            <div class="text-muted small text-uppercase">Anomaly score</div>
+                            <div class="fs-3 fw-bold">@twin.Anomaly.Score.ToString("F4")</div>
+                            <div class="small text-muted">
+                                threshold @twin.Anomaly.Threshold.ToString("F4")<br />
+                                lower = more anomalous
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="border rounded p-3 h-100 text-center bg-light">
+                            <div class="text-muted small text-uppercase">Predicted condition</div>
+                            <div class="fs-3 fw-bold">@twin.Classification.PredictedClass</div>
+                            <div class="small text-muted">Random Forest</div>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="border rounded p-3 h-100 text-center bg-light">
+                            <div class="text-muted small text-uppercase">Confidence</div>
+                            <div class="fs-3 fw-bold">
+                                @(twin.Classification.Confidence is null
+                                    ? "n/a"
+                                    : twin.Classification.Confidence.Value.ToString("P1"))
+                            </div>
+                            @if (twin.Classification.Probabilities is { Count: > 0 })
+                            {
+                                <div class="small text-muted">
+                                    @string.Join(" · ", twin.Classification.Probabilities
+                                        .Where(p => p.Value > 0)
+                                        .OrderByDescending(p => p.Value)
+                                        .Select(p => $"{p.Key} {p.Value:P0}"))
+                                </div>
+                            }
+                        </div>
+                    </div>
+                </div>
+                <div class="small text-muted mb-3">
+                    The four tiles above are <strong>model output</strong>.
+                </div>
+
+                <!-- ───────── INPUTS ───────── -->
+                <div class="row g-3">
+                    <div class="col-md-4">
+                        <div class="border rounded p-3 h-100">
+                            <div class="text-muted small text-uppercase mb-2">Operating context</div>
+                            <table class="table table-sm mb-0">
+                                <tbody>
+                                    <tr>
+                                        <td>Rotational speed</td>
+                                        <td class="text-end fw-semibold">
+                                            @(twin.OperatingContext.RotationalSpeedRpm?.ToString("F0") ?? "-") RPM
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <td>Motor load</td>
+                                        <td class="text-end fw-semibold">
+                                            @(twin.OperatingContext.MotorLoadHp?.ToString("G") ?? "-") HP
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <td>Window</td>
+                                        <td class="text-end">
+                                            <small>
+                                                @twin.Window.WindowStartSequence&ndash;@twin.Window.WindowEndSequence
+                                                (@twin.Window.SampleCount samples)
+                                            </small>
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <div class="col-md-4">
+                        <div class="border rounded p-3 h-100">
+                            <div class="text-muted small text-uppercase mb-2">Important features</div>
+                            <table class="table table-sm mb-0">
+                                <tbody>
+                                    <tr>
+                                        <td>RMS</td>
+                                        <td class="text-end fw-semibold">@twin.Features.VibrationRms.ToString("F4")</td>
+                                    </tr>
+                                    <tr>
+                                        <td>Peak</td>
+                                        <td class="text-end fw-semibold">@twin.Features.VibrationPeak.ToString("F4")</td>
+                                    </tr>
+                                    <tr>
+                                        <td>Kurtosis</td>
+                                        <td class="text-end fw-semibold">@twin.Features.VibrationKurtosis.ToString("F3")</td>
+                                    </tr>
+                                    <tr>
+                                        <td>Crest factor</td>
+                                        <td class="text-end fw-semibold">@twin.Features.CrestFactor.ToString("F3")</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- ───────── DEMO GROUND TRUTH — NOT MODEL OUTPUT ───────── -->
+                    <div class="col-md-4">
+                        @if (twin.DemoGroundTruth is { } truth)
+                        {
+                            var correct = string.Equals(truth.FaultClass,
+                                twin.Classification.PredictedClass, StringComparison.Ordinal);
+
+                            <div class="border border-warning rounded p-3 h-100 bg-warning-subtle">
+                                <div class="small text-uppercase fw-bold mb-1">
+                                    Demo scenario / ground truth
+                                </div>
+                                <div class="small text-muted mb-2">
+                                    Simulated condition from the CWRU recording.
+                                    <strong>Not a model output and never a model input.</strong>
+                                </div>
+                                <table class="table table-sm mb-2">
+                                    <tbody>
+                                        <tr>
+                                            <td>Recording</td>
+                                            <td class="text-end fw-semibold">@truth.RecordingId</td>
+                                        </tr>
+                                        <tr>
+                                            <td>Actual fault</td>
+                                            <td class="text-end fw-semibold">@truth.FaultClass</td>
+                                        </tr>
+                                        <tr>
+                                            <td>Defect diameter</td>
+                                            <td class="text-end fw-semibold">
+                                                @(truth.FaultSeverityIn is null
+                                                    ? "n/a (healthy)"
+                                                    : $"{truth.FaultSeverityIn:0.000}\"")
+                                            </td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                                <div class="alert @(correct ? "alert-success" : "alert-danger") py-2 mb-0 small">
+                                    <strong>@(correct ? "Prediction MATCHES" : "Prediction DIFFERS")</strong>
+                                    — predicted <strong>@twin.Classification.PredictedClass</strong>,
+                                    actual <strong>@truth.FaultClass</strong>.
+                                </div>
+                            </div>
+                        }
+                        else
+                        {
+                            <div class="border rounded p-3 h-100 text-muted small">
+                                No demo ground truth attached (demo mode off).
+                            </div>
+                        }
+                    </div>
+                </div>
+
+                <!-- ───────── HISTORY ───────── -->
+                <div class="mt-3">
+                    <button class="btn btn-sm btn-outline-primary"
+                            @onclick="() => ToggleHistoryAsync(twin.AssetId)">
+                        @(_historyAsset == twin.AssetId ? "Hide" : "Show") recent predictions
+                    </button>
+
+                    @if (_historyAsset == twin.AssetId)
+                    {
+                        @if (_history is null)
+                        {
+                            <p class="mt-2">Loading history...</p>
+                        }
+                        else if (_history.Count == 0)
+                        {
+                            <p class="mt-2 text-muted">No history recorded.</p>
+                        }
+                        else
+                        {
+                            var total = _history.Count;
+                            var matched = _history.Count(h =>
+                                h.DemoFaultClass is null ||
+                                string.Equals(h.DemoFaultClass, h.PredictedClass, StringComparison.Ordinal));
+                            var flagged = _history.Count(h => h.IsAnomalous);
+
+                            <div class="mt-3">
+                                <div class="alert alert-secondary py-2 small">
+                                    Across the last <strong>@total</strong> windows:
+                                    anomaly detector flagged <strong>@flagged/@total</strong>;
+                                    classifier matched ground truth on <strong>@matched/@total</strong>.
+                                    @if (matched < total)
+                                    {
+                                        <span>
+                                            The <strong>@(total - matched)</strong> disagreements are shown in red below —
+                                            incorrect predictions are not hidden.
+                                        </span>
+                                    }
+                                </div>
+
+                                <div style="max-height: 320px; overflow-y: auto;">
+                                    <table class="table table-sm table-striped">
+                                        <thead class="sticky-top bg-white">
+                                            <tr>
+                                                <th>Window</th>
+                                                <th>Health</th>
+                                                <th class="text-end">Score</th>
+                                                <th>Predicted</th>
+                                                <th class="text-end">Conf.</th>
+                                                <th>Actual (demo)</th>
+                                                <th class="text-end">RMS</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            @foreach (var h in _history)
+                                            {
+                                                var mismatch = h.DemoFaultClass is not null &&
+                                                    !string.Equals(h.DemoFaultClass, h.PredictedClass, StringComparison.Ordinal);
+                                                <tr class="@(mismatch ? "table-danger" : null)">
+                                                    <td><small>@h.WindowStartSequence&ndash;@h.WindowEndSequence</small></td>
+                                                    <td>
+                                                        <span class="badge bg-@(h.IsAnomalous ? "danger" : "success")">
+                                                            @(h.IsAnomalous ? "ANOMALOUS" : "NORMAL")
+                                                        </span>
+                                                    </td>
+                                                    <td class="text-end">@h.AnomalyScore.ToString("F4")</td>
+                                                    <td class="fw-semibold">@h.PredictedClass</td>
+                                                    <td class="text-end">@(h.Confidence?.ToString("P0") ?? "-")</td>
+                                                    <td>@(h.DemoFaultClass ?? "-")</td>
+                                                    <td class="text-end">@h.VibrationRms.ToString("F4")</td>
+                                                </tr>
+                                            }
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        }
+                    }
+                </div>
+            </div>
+        </div>
+    }
+}
+
+@code {
+    [Parameter] public string? AssetId { get; set; }
+
+    private bool _loading = true;
+    private string? _error;
+    private List<DigitalTwinStateDto>? _twins;
+    private string? _historyAsset;
+    private List<DigitalTwinHistoryPointDto>? _history;
+
+    protected override Task OnInitializedAsync() => RefreshAsync();
+
+    private async Task RefreshAsync()
+    {
+        _loading = true;
+        _error = null;
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(AssetId))
+            {
+                var one = await Api.GetDigitalTwinAsync(AssetId);
+                _twins = one is null ? new() : new() { one };
+            }
+            else
+            {
+                var resp = await Api.GetDigitalTwinsAsync();
+                _twins = resp?.Items?.ToList() ?? new();
+            }
+
+            if (_historyAsset is not null)
+            {
+                var hist = await Api.GetDigitalTwinHistoryAsync(_historyAsset, 200);
+                _history = hist?.Items?.ToList() ?? new();
+            }
+        }
+        catch (Exception ex)
+        {
+            _error = $"{ex.GetType().Name}: {ex.Message}";
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task ToggleHistoryAsync(string assetId)
+    {
+        if (_historyAsset == assetId)
+        {
+            _historyAsset = null;
+            _history = null;
+            return;
+        }
+
+        _historyAsset = assetId;
+        _history = null;
+        try
+        {
+            var hist = await Api.GetDigitalTwinHistoryAsync(assetId, 200);
+            _history = hist?.Items?.ToList() ?? new();
+        }
+        catch (Exception ex)
+        {
+            _error = $"{ex.GetType().Name}: {ex.Message}";
+            _history = new();
+        }
+    }
+}

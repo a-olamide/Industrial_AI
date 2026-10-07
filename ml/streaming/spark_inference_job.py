@@ -65,6 +65,13 @@ from .contracts import (
 )
 from .inference import LoadedModels, load_models
 from .stream_features import StreamingWindowFeatures
+from .twin_sink import (
+    DEFAULT_JDBC_PASSWORD,
+    DEFAULT_JDBC_URL,
+    DEFAULT_JDBC_USER,
+    TwinSink,
+    TwinSinkConfig,
+)
 
 
 DEFAULT_KAFKA_BOOTSTRAP = "kafka:29092"
@@ -258,7 +265,12 @@ def score_rows(models: LoadedModels, rows: list[dict[str, Any]]) -> list[dict[st
     return results
 
 
-def make_batch_handler(models: LoadedModels, output_dir: Path | None, echo: bool):
+def make_batch_handler(
+    models: LoadedModels,
+    output_dir: Path | None,
+    echo: bool,
+    twin_sink: "TwinSink | None" = None,
+):
     """Build the foreachBatch callback that performs model inference."""
 
     def handle(batch_df: DataFrame, batch_id: int) -> None:
@@ -267,6 +279,24 @@ def make_batch_handler(models: LoadedModels, output_dir: Path | None, echo: bool
             return
         rows.sort(key=lambda r: (r["assetId"], r["windowIndex"]))
         results = score_rows(models, rows)
+
+        if twin_sink is not None:
+            # Digital Twin persistence. Failing to persist must not kill
+            # the stream - inference results are still echoed and written
+            # to the JSONL sink, and the next batch retries.
+            try:
+                history_rows, current_rows = twin_sink.write(results)
+                print(
+                    f"[batch {batch_id}] persisted {history_rows} history row(s), "
+                    f"{current_rows} twin upsert(s)",
+                    flush=True,
+                )
+            except Exception as exc:  # pragma: no cover - needs a live DB
+                print(
+                    f"[batch {batch_id}] WARNING: Digital Twin persistence failed: "
+                    f"{type(exc).__name__}: {exc}",
+                    flush=True,
+                )
 
         if output_dir is not None:
             output_dir.mkdir(parents=True, exist_ok=True)
@@ -305,6 +335,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", default=None, help="directory for result JSONL")
     parser.add_argument("--models-dir", default=None)
     parser.add_argument(
+        "--sql-url",
+        default=DEFAULT_JDBC_URL,
+        help="SQL Server JDBC URL for Digital Twin persistence",
+    )
+    parser.add_argument("--sql-user", default=DEFAULT_JDBC_USER)
+    parser.add_argument("--sql-password", default=DEFAULT_JDBC_PASSWORD)
+    parser.add_argument(
+        "--no-sql",
+        action="store_true",
+        help="skip Digital Twin persistence (inference only)",
+    )
+    parser.add_argument(
         "--await-seconds",
         type=float,
         default=0.0,
@@ -333,6 +375,18 @@ def main(argv: list[str] | None = None) -> int:
 
     windows = aggregate_windows(parse_telemetry(raw))
 
+    twin_sink = None
+    if not args.no_sql:
+        twin_sink = TwinSink(
+            spark,
+            TwinSinkConfig(
+                url=args.sql_url, user=args.sql_user, password=args.sql_password
+            ),
+        )
+        print(f"[inference] Digital Twin persistence -> {args.sql_url}", flush=True)
+    else:
+        print("[inference] Digital Twin persistence DISABLED (--no-sql)", flush=True)
+
     query = (
         windows.writeStream
         # Complete windows are emitted once; "update" keeps re-emitting a
@@ -345,6 +399,7 @@ def main(argv: list[str] | None = None) -> int:
                 models,
                 Path(args.output) if args.output else None,
                 echo=not args.quiet,
+                twin_sink=twin_sink,
             )
         )
         .option("checkpointLocation", args.checkpoint)

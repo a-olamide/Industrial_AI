@@ -311,15 +311,169 @@ Isolation Forest flagged 118 (100%); of the 14 the Random Forest
 mistyped, it still flagged 14 (100%). The detector says "something is
 wrong" even where the classifier cannot say "what is wrong".
 
+## Verified Kafka run
+
+Executed against a live broker, not the file source:
+
+```
+$ docker exec industrial_kafka kafka-get-offsets.sh --topic industrial.telemetry.vibration
+industrial.telemetry.vibration:0:121991      # MOTOR_003
+industrial.telemetry.vibration:1:0
+industrial.telemetry.vibration:2:491787      # MOTOR_001 + MOTOR_002
+```
+
+Messages are keyed by `assetId`, so each asset's samples land on a single
+partition and per-asset ordering is preserved.
+
+Spark's checkpoint confirms it consumed from the broker rather than a
+file:
+
+```
+$ cat <checkpoint>/offsets/0
+{"industrial.telemetry.vibration":{"2":6144,"1":0,"0":0}}
+```
+
+The containerized `spark-vibration` service produced identical scores to
+the earlier file-source run (−0.7897 / −0.7773 / −0.7782 for
+`OR021@6_3` windows 0–2), which is what makes the two paths
+interchangeable.
+
+### Python version note
+
+`apache/spark:3.5.1` ships Python 3.8.10, but the models were pickled
+under Python 3.9 with scikit-learn 1.6.1, and scikit-learn ≥ 1.6
+requires Python ≥ 3.9 — so the artifacts simply cannot be unpickled in
+the stock image. `spark/Dockerfile.ml` installs Python 3.9 from
+deadsnakes and points `PYSPARK_PYTHON` at it, pinning numpy, pandas,
+scipy, scikit-learn and joblib to exactly the versions that produced the
+pickles.
+
+The build deliberately does **not** `apt-get purge`/`autoremove` the
+install tooling afterwards: doing so strips shared libraries the numpy
+and pandas C extensions link against, and the failure surfaces much
+later as a confusing `partially initialized module 'pandas'` ABI error.
+
+## Digital Twin persistence
+
+Each completed window is written to SQL Server by the same Spark job:
+
+| table | shape |
+|---|---|
+| `dbo.asset_twin_current` | one row per asset, upserted (MERGE) |
+| `dbo.asset_twin_inference_history` | append-only, one row per window |
+
+**Why direct JDBC.** `spark/jobs/industrial_streaming_analytics.py`
+already writes six tables this way and already runs a py4j MERGE for
+`asset_risk_current`, so this follows an established path: no new
+broker, database, service or HTTP hop, and the current-state/history
+pair mirrors the existing `asset_risk_current`/`asset_risk_minute`
+shape. A REST ingestion endpoint was the alternative and was rejected —
+it adds a network hop and a second deployable for data Spark can already
+write. Volume makes it safe: one row per 2048 samples, ~6 rows/second
+per asset even at full 12 kHz replay.
+
+**Column groups** are load-bearing. Model output (`is_anomalous`,
+`anomaly_*`, `predicted_class`, `confidence`), inputs (`vibration_*`,
+`motor_load_hp`, `rotational_speed_rpm`) and demo ground truth are
+separated, and every ground-truth column carries a `demo_` prefix so it
+cannot be mistaken for a model output in a query, a DTO or on screen.
+
+**Idempotency.** History inserts are guarded by
+`WHERE NOT EXISTS (asset_id, window_end_sequence)` behind a unique
+index, because Spark's `update` output mode can re-emit a completed
+group and Kafka delivery is at-least-once. Verified: replaying
+`OR021@6_3` a second time took MOTOR_002 from 3 to 59 history rows, not
+62.
+
+**Current state** is last-write-wins, with rows applied in
+`(asset_id, window_end_sequence)` order within a batch so the newest
+window of a batch survives.
+
+**One JDBC gotcha, documented in code:** `--packages` puts mssql-jdbc on
+Spark's *context* classloader, but `java.sql.DriverManager` only
+consults drivers registered with the *system* classloader and answers
+"No suitable driver found" even though the jar is demonstrably loaded.
+`twin_sink.py` instantiates the driver and calls `connect` directly
+instead.
+
+## Digital Twin API and UI
+
+| endpoint | returns |
+|---|---|
+| `GET /api/v1/digital-twins` | current state for every asset |
+| `GET /api/v1/digital-twins/{assetId}` | current state for one asset |
+| `GET /api/v1/digital-twins/{assetId}/history?take=N` | recent inferences, newest first |
+
+All accept `?includeGroundTruth=false` to omit the demo block. Responses
+separate `anomaly` and `classification` (model output) from `features`
+and `operatingContext` (inputs) and from `demoGroundTruth`. Raw
+2048-sample arrays are never exposed — only the window's sequence range.
+
+Blazor page: **`/digital-twin`** (nav: "ML Digital Twin"). Shows health,
+anomaly score, predicted condition, confidence with the full class
+distribution, operating context, the four headline features and last
+updated; ground truth sits in a visually distinct bordered panel labelled
+"Demo scenario / ground truth — not a model output and never a model
+input", with an explicit MATCHES/DIFFERS verdict. The history table
+highlights disagreements in red.
+
+A future explanation service has a reserved seam in
+`HealthExplanationContextDto` / `HealthExplanationContextFactory`. It
+carries model output, features, operating context and window
+provenance — and deliberately **not** ground truth. Nothing calls an LLM
+in this phase.
+
+## Full end-to-end demo
+
+```bash
+# 1. infrastructure
+docker compose up -d kafka sqlserver
+docker compose up kafka-init sqlserver-init          # topics + schema
+docker compose up -d --build spark-vibration         # Kafka -> ML -> SQL
+
+# 2. API + UI (net9.0 projects on a .NET 10 runtime)
+DOTNET_ROLL_FORWARD=Major dotnet run \
+    --project src/IndustrialAnalytics.Api --urls http://localhost:5025 &
+DOTNET_ROLL_FORWARD=Major dotnet run \
+    --project src/IndustrialAnalytics.Ui  --urls http://localhost:5080 &
+
+# 3. replay the three demo scenarios
+python -m ml.streaming.replay_producer --recording Normal_3  --asset MOTOR_001 \
+    --sink kafka --bootstrap localhost:9092
+python -m ml.streaming.replay_producer --recording OR021@6_3 --asset MOTOR_002 \
+    --sink kafka --bootstrap localhost:9092
+python -m ml.streaming.replay_producer --recording OR014@6_3 --asset MOTOR_003 \
+    --sink kafka --bootstrap localhost:9092
+
+# 4. observe
+docker logs -f industrial_spark_vibration            # live inference
+curl -s http://localhost:5025/api/v1/digital-twins | python -m json.tool
+open http://localhost:5080/digital-twin              # the UI
+
+# 5. stop / clean up
+docker compose down          # stop everything
+docker compose down -v       # also drop Kafka + SQL volumes
+```
+
+### Demo results through the real pipeline
+
+| asset | recording | windows | anomaly flagged | classifier correct |
+|---|---|---|---|---|
+| MOTOR_001 | `Normal_3` | 237 | 4 (1.7% false alarms) | 237/237 NORMAL |
+| MOTOR_002 | `OR021@6_3` 0.021" | 59 | 59/59 | 59/59 OUTER_RACE |
+| MOTOR_003 | `OR014@6_3` 0.014" | 59 | 59/59 | **45/59** |
+
+MOTOR_003's 14 `OUTER_RACE → BALL` errors and MOTOR_001's 4 false alarms
+match the offline Experiment-2 and Experiment-3 numbers exactly, now
+through Kafka, Spark, SQL Server and the API. The UI shows the
+disagreements rather than hiding them.
+
 ## Known limitations
 
-1. **Kafka and Docker were not exercised in the session that built
-   this.** The Docker daemon was unavailable, so the Kafka source path,
-   `spark/Dockerfile.ml` and the `spark-vibration` compose service are
-   written and reviewed but **not yet run end to end**. Everything else —
-   replay, parsing, windowing, features, both models, result contract —
-   was executed under a real `SparkSession` via the file source. The
-   Kafka path differs only in the `readStream` format block.
+1. ~~Kafka and Docker were not exercised.~~ **Now verified.** The full
+   path — replay → real Kafka broker → containerized Spark → both models
+   → SQL Server — has been executed end to end. See "Verified Kafka run"
+   below.
 2. The dataset limitations of Experiments 1–3 carry over unchanged:
    NORMAL recordings are 48 kHz and fault recordings 12 kHz with no
    resampling, so a 2048-sample window spans a different physical

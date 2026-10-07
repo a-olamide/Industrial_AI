@@ -177,7 +177,8 @@ services:
   # Reads  : kafka topic industrial.telemetry.vibration
   # Loads  : ml/models/rf_multiseverity_cwru.joblib  (Experiment 2)
   #          ml/models/isolation_forest_cwru.joblib  (Experiment 3)
-  # Writes : JSONL inference results to spark/inference-output/
+  # Writes : dbo.asset_twin_current + dbo.asset_twin_inference_history
+  #          and JSONL inference results to spark/inference-output/
   # Job UI : http://localhost:4041
   #
   # Model artifacts are gitignored. Run the two experiments once before
@@ -190,6 +191,8 @@ services:
     container_name: industrial_spark_vibration
     depends_on:
       kafka:
+        condition: service_healthy
+      sqlserver:
         condition: service_healthy
     ports:
       - "4041:4041"

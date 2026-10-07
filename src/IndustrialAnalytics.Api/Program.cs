@@ -55,6 +55,7 @@ v1.MapRecommendations();
 v1.MapAssetRecommendations();
 v1.MapAnomalies();
 v1.MapInsights();
+v1.MapDigitalTwins();
 
 app.Run();
 

@@ -166,6 +166,17 @@ Base URL: `http://localhost:5025`
 | POST | `/api/v1/assets/{id}/insights` | AI-generated insight (Ollama LLM) |
 | PUT | `/api/v1/recommendations/{id}/ack` | Acknowledge a recommendation |
 | PUT | `/api/v1/recommendations/{id}/close` | Close a recommendation |
+| GET | `/api/v1/digital-twins` | **ML Digital Twin** — current state for every asset |
+| GET | `/api/v1/digital-twins/{assetId}` | ML Digital Twin state for one asset |
+| GET | `/api/v1/digital-twins/{assetId}/history` | Recent inference history (`take`) |
+
+The `digital-twins` endpoints are backed by the CWRU vibration ML
+pipeline (Kafka → Spark Structured Streaming → Isolation Forest + Random
+Forest → SQL Server). Responses separate **model output** (`anomaly`,
+`classification`) from inputs (`features`, `operatingContext`) and from
+`demoGroundTruth`, which is simulated-scenario metadata and never a model
+input; pass `?includeGroundTruth=false` to omit it. See
+[`ml/streaming/README.md`](ml/streaming/README.md).
 
 ---
 
@@ -202,6 +213,17 @@ URL: `http://localhost:5055`
 - Risk points table
 - Open recommendations with ACK and CLOSE actions
 - AI-generated insight card (headline, likely causes, next steps) via Ollama
+
+**ML Digital Twin** (`/digital-twin`) — live bearing health from the CWRU
+vibration pipeline. Per asset: health (NORMAL / ANOMALOUS) from the
+Isolation Forest, anomaly score against its frozen threshold, predicted
+fault condition and confidence from the Random Forest with the full class
+distribution, operating context (RPM, motor load), the headline
+engineered features (RMS, peak, kurtosis, crest factor), and last
+updated. Demo ground truth appears in a visually separate panel labelled
+*"not a model output and never a model input"*, with an explicit
+MATCHES / DIFFERS verdict, and the recent-predictions table highlights
+disagreements in red rather than hiding them.
 
 ---
 
