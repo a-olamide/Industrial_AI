@@ -138,12 +138,126 @@ namespace IndustrialAnalytics.Api.Services
 
         private static Dictionary<string, JsonElement> BuildSchemaDictionary(JsonElement schema)
         {
+            var sanitized = SanitizeSchema(schema);
             var map = new Dictionary<string, JsonElement>();
-            foreach (var property in schema.EnumerateObject())
+            foreach (var property in sanitized.EnumerateObject())
             {
                 map[property.Name] = property.Value;
             }
             return map;
+        }
+
+        /// <summary>
+        /// JSON Schema keywords the structured-output endpoint rejects.
+        ///
+        /// <para>
+        /// The API accepts only a subset of JSON Schema. Sending
+        /// <c>maxItems</c> returns
+        /// <c>400 output_config.format.schema: For 'array' type, property
+        /// 'maxItems' is not supported</c>, and the numeric/string/object
+        /// constraints below fail the same way.
+        /// </para>
+        ///
+        /// <para>
+        /// Every keyword here is a pure <i>constraint</i>: dropping it only
+        /// widens what validates, never changes the document's shape. That is
+        /// the rule for adding to this set. Composition and shape keywords -
+        /// <c>type</c>, <c>properties</c>, <c>items</c>, <c>required</c>,
+        /// <c>enum</c>, <c>const</c>, <c>anyOf</c>, <c>allOf</c>,
+        /// <c>oneOf</c>, <c>$ref</c>, <c>$defs</c>, <c>format</c>,
+        /// <c>additionalProperties</c>, <c>description</c> - are never
+        /// stripped, because silently relaxing those would change the
+        /// contract rather than relax a bound.
+        /// </para>
+        /// </summary>
+        private static readonly HashSet<string> UnsupportedSchemaKeywords = new(StringComparer.Ordinal)
+        {
+            // Array constraints - the one that caused the original 400.
+            "maxItems", "minItems", "uniqueItems", "maxContains", "minContains",
+            // Numeric constraints.
+            "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf",
+            // String constraints. `format` is supported and deliberately kept;
+            // `pattern` is stripped because a rejected regex costs a 400 while
+            // a dropped one costs only client-side validation we already do.
+            "minLength", "maxLength", "pattern",
+            // Object-size constraints.
+            "minProperties", "maxProperties",
+        };
+
+        /// <summary>
+        /// Recursively removes schema keywords the API does not accept.
+        ///
+        /// <para>
+        /// The Python and TypeScript SDKs do this automatically; the C# SDK
+        /// does not, so an unsupported keyword reaches the wire and returns a
+        /// 400. This closes that gap once, for every schema this client ever
+        /// sends, rather than per-schema. Item-count limits are instead
+        /// enforced by the prompt and by application-side truncation.
+        /// </para>
+        ///
+        /// Exposed for testing so a regression test can assert on the exact
+        /// payload that would be transmitted.
+        /// </summary>
+        public static JsonElement SanitizeSchema(JsonElement schema)
+        {
+            using var buffer = new MemoryStream();
+            using (var writer = new Utf8JsonWriter(buffer))
+            {
+                WriteSanitized(schema, writer, keysAreFieldNames: false);
+            }
+            using var document = JsonDocument.Parse(buffer.ToArray());
+            return document.RootElement.Clone();
+        }
+
+        /// <summary>
+        /// Object keys whose children are USER-CHOSEN NAMES rather than
+        /// schema keywords. A response field legitimately called
+        /// <c>pattern</c> or <c>minimum</c> must survive sanitization, so
+        /// filtering is suspended one level under these.
+        /// </summary>
+        private static readonly HashSet<string> NameBearingKeywords = new(StringComparer.Ordinal)
+        {
+            "properties", "$defs", "definitions",
+        };
+
+        private static void WriteSanitized(JsonElement node, Utf8JsonWriter writer, bool keysAreFieldNames)
+        {
+            switch (node.ValueKind)
+            {
+                case JsonValueKind.Object:
+                    writer.WriteStartObject();
+                    foreach (var property in node.EnumerateObject())
+                    {
+                        // Only filter where the key is a schema keyword. One
+                        // level under "properties"/"$defs" the keys are field
+                        // names and must pass through untouched.
+                        if (!keysAreFieldNames && UnsupportedSchemaKeywords.Contains(property.Name))
+                        {
+                            continue;
+                        }
+                        writer.WritePropertyName(property.Name);
+                        WriteSanitized(
+                            property.Value,
+                            writer,
+                            keysAreFieldNames: !keysAreFieldNames
+                                && NameBearingKeywords.Contains(property.Name));
+                    }
+                    writer.WriteEndObject();
+                    break;
+
+                case JsonValueKind.Array:
+                    writer.WriteStartArray();
+                    foreach (var item in node.EnumerateArray())
+                    {
+                        WriteSanitized(item, writer, keysAreFieldNames: false);
+                    }
+                    writer.WriteEndArray();
+                    break;
+
+                default:
+                    node.WriteTo(writer);
+                    break;
+            }
         }
     }
 

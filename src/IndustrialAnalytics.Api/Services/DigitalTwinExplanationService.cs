@@ -90,8 +90,32 @@ namespace IndustrialAnalytics.Api.Services
             """;
 
         /// <summary>
+        /// Maximum list length for <c>evidence</c> and
+        /// <c>recommendedActions</c>.
+        /// <para>
+        /// This is NOT expressed as <c>maxItems</c> in the schema: the
+        /// structured-output endpoint rejects array constraints with
+        /// <c>400 ... property 'maxItems' is not supported</c>. The limit is
+        /// instead asked for in the prompt and the field descriptions, and
+        /// enforced for real by truncation in
+        /// <see cref="ParseExplanation"/> - so a verbose answer is trimmed
+        /// rather than failing the request.
+        /// </para>
+        /// </summary>
+        public const int MaxListItems = 4;
+
+        /// <summary>
         /// Response schema. Claude is constrained to it, so the UI's fields
         /// are guaranteed rather than parsed hopefully.
+        /// <para>
+        /// Deliberately limited to the keyword subset the structured-output
+        /// endpoint accepts - types, <c>properties</c>, <c>items</c>,
+        /// <c>required</c>, <c>additionalProperties: false</c> and
+        /// <c>description</c>. Validation bounds (<c>maxItems</c>,
+        /// <c>minLength</c>, <c>minimum</c>, ...) are not supported and are
+        /// additionally stripped by
+        /// <see cref="ClaudeLlmClient.SanitizeSchema"/> as a backstop.
+        /// </para>
         /// </summary>
         public static JsonElement ResponseSchema { get; } = JsonSerializer.Deserialize<JsonElement>("""
             {
@@ -109,15 +133,13 @@ namespace IndustrialAnalytics.Api.Services
                 },
                 "evidence": {
                   "type": "array",
-                  "maxItems": 4,
                   "items": { "type": "string" },
-                  "description": "Specific supplied values that support the assessment."
+                  "description": "Specific supplied values that support the assessment. Provide at most 4 items, each one short sentence."
                 },
                 "recommendedActions": {
                   "type": "array",
-                  "maxItems": 4,
                   "items": { "type": "string" },
-                  "description": "Inspection and monitoring steps, not assertions of required repair."
+                  "description": "Inspection and monitoring steps, not assertions of required repair. Provide at most 4 items, each one short sentence."
                 },
                 "confidenceNote": {
                   "type": "string",
@@ -248,16 +270,27 @@ namespace IndustrialAnalytics.Api.Services
                     "Claude returned a response that did not match the explanation schema.");
             }
 
+            // Item-count limits are enforced here rather than by a schema
+            // keyword, because the structured-output endpoint rejects
+            // `maxItems`. Truncating keeps a slightly over-long answer
+            // usable instead of discarding the whole explanation.
             return parsed with
             {
                 LikelyCondition = string.IsNullOrWhiteSpace(parsed.LikelyCondition)
                     ? "Not stated"
                     : parsed.LikelyCondition,
-                Evidence = parsed.Evidence ?? [],
-                RecommendedActions = parsed.RecommendedActions ?? [],
+                Evidence = Trim(parsed.Evidence),
+                RecommendedActions = Trim(parsed.RecommendedActions),
                 ConfidenceNote = parsed.ConfidenceNote ?? "",
             };
         }
+
+        private static IReadOnlyList<string> Trim(IReadOnlyList<string>? items)
+            => items is null
+                ? []
+                : items.Where(i => !string.IsNullOrWhiteSpace(i))
+                       .Take(MaxListItems)
+                       .ToList();
     }
 
     public sealed class TwinNotFoundException(string message) : Exception(message);

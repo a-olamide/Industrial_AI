@@ -630,3 +630,241 @@ public class CostControlTests
         Assert.True(options.CacheEnabled);
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// Structured-output schema compatibility
+//
+// Regression cover for the live 400:
+//   output_config.format.schema: For 'array' type, property 'maxItems'
+//   is not supported
+//
+// The structured-output endpoint accepts only a subset of JSON Schema. The
+// Python and TypeScript SDKs strip unsupported keywords automatically; the
+// C# SDK does not, so they reach the wire and the request fails.
+// ─────────────────────────────────────────────────────────────────────────
+
+public class SchemaCompatibilityTests
+{
+    /// <summary>
+    /// Constraint keywords the API rejects. Dropping any of them only widens
+    /// what validates - none of them changes the document's shape.
+    /// </summary>
+    private static readonly string[] UnsupportedKeywords =
+    [
+        "maxItems", "minItems", "uniqueItems", "maxContains", "minContains",
+        "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf",
+        "minLength", "maxLength", "pattern",
+        "minProperties", "maxProperties",
+    ];
+
+    private static IEnumerable<string> AllKeywords(JsonElement node)
+    {
+        switch (node.ValueKind)
+        {
+            case JsonValueKind.Object:
+                foreach (var property in node.EnumerateObject())
+                {
+                    // Keys under "properties" are field names, not keywords -
+                    // a field legitimately called "pattern" must not trip this.
+                    if (property.Name == "properties" &&
+                        property.Value.ValueKind == JsonValueKind.Object)
+                    {
+                        foreach (var field in property.Value.EnumerateObject())
+                            foreach (var nested in AllKeywords(field.Value))
+                                yield return nested;
+                        continue;
+                    }
+
+                    yield return property.Name;
+                    foreach (var nested in AllKeywords(property.Value))
+                        yield return nested;
+                }
+                break;
+
+            case JsonValueKind.Array:
+                foreach (var item in node.EnumerateArray())
+                    foreach (var nested in AllKeywords(item))
+                        yield return nested;
+                break;
+        }
+    }
+
+    [Fact] // the specific keyword that caused the live 400
+    public void Response_schema_contains_no_maxItems()
+    {
+        Assert.DoesNotContain(
+            "maxItems",
+            AllKeywords(DigitalTwinExplanationService.ResponseSchema));
+    }
+
+    [Fact]
+    public void Response_schema_contains_no_unsupported_keyword_at_all()
+    {
+        var used = AllKeywords(DigitalTwinExplanationService.ResponseSchema).ToHashSet();
+        var offenders = UnsupportedKeywords.Where(used.Contains).ToList();
+        Assert.True(offenders.Count == 0, $"unsupported schema keyword(s): {string.Join(", ", offenders)}");
+    }
+
+    [Fact]
+    public void Sanitizer_strips_maxItems_from_a_schema_that_still_has_it()
+    {
+        var dirty = JsonSerializer.Deserialize<JsonElement>("""
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["evidence"],
+              "properties": {
+                "evidence": { "type": "array", "maxItems": 4, "items": { "type": "string" } }
+              }
+            }
+            """);
+
+        Assert.Contains("maxItems", AllKeywords(dirty)); // the fixture really is dirty
+
+        var clean = ClaudeLlmClient.SanitizeSchema(dirty);
+        Assert.DoesNotContain("maxItems", AllKeywords(clean));
+    }
+
+    [Fact]
+    public void Sanitizer_strips_every_unsupported_keyword_recursively()
+    {
+        var dirty = JsonSerializer.Deserialize<JsonElement>("""
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "minProperties": 1,
+              "properties": {
+                "name":  { "type": "string", "minLength": 2, "maxLength": 9, "pattern": "^[a-z]+$" },
+                "count": { "type": "integer", "minimum": 0, "maximum": 10, "multipleOf": 2 },
+                "tags":  { "type": "array", "minItems": 1, "maxItems": 3, "uniqueItems": true,
+                           "items": { "type": "object", "additionalProperties": false,
+                                      "properties": { "v": { "type": "string", "maxLength": 4 } } } }
+              }
+            }
+            """);
+
+        var clean = ClaudeLlmClient.SanitizeSchema(dirty);
+        var used = AllKeywords(clean).ToHashSet();
+
+        foreach (var keyword in UnsupportedKeywords)
+            Assert.False(used.Contains(keyword), $"{keyword} survived sanitization");
+    }
+
+    [Fact]
+    public void Sanitizer_preserves_shape_and_composition_keywords()
+    {
+        var schema = JsonSerializer.Deserialize<JsonElement>("""
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["mode", "tags"],
+              "properties": {
+                "mode": { "type": "string", "enum": ["a", "b"], "description": "pick one" },
+                "when": { "type": "string", "format": "date-time" },
+                "tags": { "type": "array", "maxItems": 2, "items": { "type": "string" } }
+              }
+            }
+            """);
+
+        var clean = ClaudeLlmClient.SanitizeSchema(schema);
+
+        // The constraint is gone...
+        Assert.DoesNotContain("maxItems", AllKeywords(clean));
+        // ...but nothing that defines the document's shape was touched.
+        Assert.Equal("object", clean.GetProperty("type").GetString());
+        Assert.False(clean.GetProperty("additionalProperties").GetBoolean());
+        Assert.Equal(2, clean.GetProperty("required").GetArrayLength());
+
+        var properties = clean.GetProperty("properties");
+        Assert.Equal(2, properties.GetProperty("mode").GetProperty("enum").GetArrayLength());
+        Assert.Equal("pick one", properties.GetProperty("mode").GetProperty("description").GetString());
+        Assert.Equal("date-time", properties.GetProperty("when").GetProperty("format").GetString());
+        Assert.Equal("array", properties.GetProperty("tags").GetProperty("type").GetString());
+        Assert.Equal("string", properties.GetProperty("tags").GetProperty("items").GetProperty("type").GetString());
+    }
+
+    [Fact]
+    public void Sanitizer_does_not_strip_a_field_that_happens_to_be_named_like_a_keyword()
+    {
+        var schema = JsonSerializer.Deserialize<JsonElement>("""
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["pattern"],
+              "properties": { "pattern": { "type": "string" } }
+            }
+            """);
+
+        var clean = ClaudeLlmClient.SanitizeSchema(schema);
+        Assert.True(clean.GetProperty("properties").TryGetProperty("pattern", out var field));
+        Assert.Equal("string", field.GetProperty("type").GetString());
+    }
+
+    [Fact]
+    public void Schema_still_requires_every_ui_field_after_the_fix()
+    {
+        var clean = ClaudeLlmClient.SanitizeSchema(DigitalTwinExplanationService.ResponseSchema);
+        var required = clean.GetProperty("required").EnumerateArray()
+            .Select(e => e.GetString()).ToHashSet();
+
+        Assert.Equal(
+            new HashSet<string?> { "summary", "likelyCondition", "evidence", "recommendedActions", "confidenceNote" },
+            required);
+        Assert.False(clean.GetProperty("additionalProperties").GetBoolean());
+
+        var properties = clean.GetProperty("properties");
+        Assert.Equal("array", properties.GetProperty("evidence").GetProperty("type").GetString());
+        Assert.Equal("array", properties.GetProperty("recommendedActions").GetProperty("type").GetString());
+        Assert.Equal("string", properties.GetProperty("summary").GetProperty("type").GetString());
+    }
+
+    [Fact]
+    public void Item_limit_is_enforced_in_application_code_instead_of_the_schema()
+    {
+        var verbose = JsonSerializer.Serialize(new
+        {
+            summary = "Six evidence points were returned.",
+            likelyCondition = "Model prediction: BALL",
+            evidence = new[] { "e1", "e2", "e3", "e4", "e5", "e6" },
+            recommendedActions = new[] { "a1", "a2", "a3", "a4", "a5" },
+            confidenceNote = "ok",
+        });
+
+        var parsed = DigitalTwinExplanationService.ParseExplanation(verbose);
+
+        Assert.Equal(DigitalTwinExplanationService.MaxListItems, parsed.Evidence.Count);
+        Assert.Equal(DigitalTwinExplanationService.MaxListItems, parsed.RecommendedActions.Count);
+        Assert.Equal(["e1", "e2", "e3", "e4"], parsed.Evidence);
+    }
+
+    [Fact]
+    public void Blank_list_entries_are_dropped_rather_than_rendered()
+    {
+        var withBlanks = JsonSerializer.Serialize(new
+        {
+            summary = "s",
+            likelyCondition = "c",
+            evidence = new[] { "real", "", "   ", "also real" },
+            recommendedActions = Array.Empty<string>(),
+            confidenceNote = "n",
+        });
+
+        var parsed = DigitalTwinExplanationService.ParseExplanation(withBlanks);
+        Assert.Equal(["real", "also real"], parsed.Evidence);
+    }
+
+    [Fact]
+    public async Task The_schema_actually_transmitted_is_the_sanitized_one()
+    {
+        var repo = new FakeTwinRepository(Fixtures.Motor003BallPrediction());
+        var claude = new FakeClaudeClient();
+        await Fixtures.Service(repo, claude).ExplainAsync("MOTOR_003", false, default);
+
+        // What the service hands the client...
+        Assert.DoesNotContain("maxItems", AllKeywords(claude.CapturedSchema));
+        // ...and what the client would put on the wire.
+        var onTheWire = ClaudeLlmClient.SanitizeSchema(claude.CapturedSchema);
+        foreach (var keyword in UnsupportedKeywords)
+            Assert.DoesNotContain(keyword, AllKeywords(onTheWire));
+    }
+}
